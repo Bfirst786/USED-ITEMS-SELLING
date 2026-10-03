@@ -1,0 +1,11 @@
+{
+  "name": "resell-assistant",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Phone-first web app for pricing, listing and tracking used items for sale.",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node --test tests/*.test.js"
+  }
+}

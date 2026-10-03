@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0f766e"/>
+  <path d="M120 236 L236 120 H372 a20 20 0 0 1 20 20 V276 L276 392 a28 28 0 0 1 -40 0 L120 276 a28 28 0 0 1 0 -40 Z" fill="#ffffff"/>
+  <circle cx="330" cy="182" r="28" fill="#0f766e"/>
+  <text x="248" y="318" font-family="Arial, Helvetica, sans-serif" font-size="120" font-weight="700" fill="#0f766e" text-anchor="middle" transform="rotate(-45 248 290)">$</text>
+</svg>

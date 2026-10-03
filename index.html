@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Resell Assistant</title>
+  <meta name="description" content="Photograph, price, list and track the things you're selling.">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Resell">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <button id="back" class="icon-btn" aria-label="Back" hidden>‹</button>
+    <h1 id="title">Resell Assistant</h1>
+  </header>
+
+  <main id="view"></main>
+
+  <nav id="nav" class="bottom-nav">
+    <a href="#/" data-route=""><span>📦</span>Items</a>
+    <a href="#/new" data-route="new" class="add"><span>＋</span>Add</a>
+    <a href="#/reminders" data-route="reminders"><span>⏰</span>Reminders<b id="nav-badge" class="nav-badge" hidden>0</b></a>
+    <a href="#/settings" data-route="settings"><span>⚙️</span>Settings</a>
+  </nav>
+
+  <dialog id="dialog"></dialog>
+  <div id="busy" class="busy" hidden><div class="spinner"></div><p id="busy-label">Working…</p></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
