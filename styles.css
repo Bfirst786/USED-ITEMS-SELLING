@@ -226,3 +226,9 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 14px); z-index: 60; background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: .9rem; max-width: calc(100vw - 32px); box-shadow: 0 6px 20px rgba(0,0,0,.25); }
 .toast[hidden] { display: none; }
+
+.sync-line { text-align: center; margin-top: 14px; }
+.sync-error { color: var(--danger) !important; }
+ol.steps { padding-left: 20px; margin: 8px 0; }
+ol.steps li { margin: 6px 0; }
+code { font-size: .85em; background: var(--bg); padding: 1px 4px; border-radius: 4px; }

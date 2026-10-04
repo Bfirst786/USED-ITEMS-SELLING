@@ -54,6 +54,11 @@ stays on your phone.
   dimensions, no size, contact info or off-platform payment in the text, too few
   photos), one-tap copy, and *Improve with Claude* with optional custom instructions
   and undo.
+- **Live Google Sheet** (optional): keeps a Google Sheet updated with an **Items**
+  tab (one row per item: tier, status, prices, sold info) and a **Listings** tab
+  (one row per listing: platform, URL, posting date, price, status). The sheet is
+  rewritten a few seconds after every change; changes made while offline are sent
+  when you're back online. Set it up in **Settings → Google Sheets sync**.
 - **Backup**: download/restore a full backup (photos included) and export a CSV
   spreadsheet of all listings.
 
@@ -80,6 +85,21 @@ The key is stored only in the app's storage on your phone and is never included 
 backups. The app calls the Anthropic API directly from your phone, so treat the
 device like you would any device with a saved password. You can choose Claude Opus
 5.5 (default, best results), Sonnet 5.5 (faster/cheaper) or Haiku 4.5 (cheapest).
+
+## Keep a live Google Sheet (optional)
+
+1. On a computer, create a Google Sheet (<https://sheets.new>).
+2. In the app, open **Settings → Google Sheets sync** and tap **Copy script**.
+3. In the sheet: **Extensions → Apps Script**, replace everything with the copied
+   script, and save.
+4. **Deploy → New deployment → Web app**, with *Execute as: Me* and *Who has access:
+   Anyone*. Authorize it. Google warns that the app is unverified because it's your
+   own script, so choose *Advanced → Go to … (unsafe)*.
+5. Paste the **Web app URL** (ends in `/exec`) into the app.
+
+The script only accepts updates carrying the private sync code built into it, so
+knowing the URL isn't enough to change your sheet. The sheet is a mirror: make
+changes in the app, because edits made in the sheet are overwritten.
 
 ## Good to know
 
@@ -111,4 +131,5 @@ npm test       # unit tests (Node 18+) for pricing, platforms, reminders and wri
 | `js/reminders.js` | Reminder rules engine and calendar (.ics) export |
 | `js/writer.js` | Listing drafts, quick edits and the checklist |
 | `js/ai.js` | Claude API calls (photo analysis, listing editing) |
+| `js/sheets.js` | Google Sheets sync: row building, the Apps Script, and sending updates |
 | `sw.js`, `manifest.webmanifest` | Offline support and install-to-home-screen |

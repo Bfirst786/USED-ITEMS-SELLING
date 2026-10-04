@@ -4,6 +4,7 @@ import { PLATFORMS, recommendPlatforms, platformName, matchPlatformKey, modeLabe
 import { DEFAULT_RULES, ACTIONS, TRIGGERS, computeReminders, isDue, toICS, isoDay, daysBetween, toDate } from './reminders.js';
 import { generateTitle, generateDescription, titleCase, shorten, fixShouting, tidy, lint, limitsFor } from './writer.js';
 import { MODELS, analyzeItem, improveListing, callClaude } from './ai.js';
+import { pushToSheet, scriptSource, newSecret, isWebAppUrl } from './sheets.js';
 
 // ---------- State ----------
 const DEFAULT_SETTINGS = {
@@ -16,6 +17,8 @@ const DEFAULT_SETTINGS = {
   shippingNote: 'Ships within 1–2 business days, carefully packed.',
   smokeFree: false,
   notify: false,
+  sheetUrl: '',
+  sheetSecret: '',
 };
 
 const S = {
@@ -23,6 +26,7 @@ const S = {
   settings: { ...DEFAULT_SETTINGS },
   rules: DEFAULT_RULES,
   rem: { done: {}, snoozed: {}, notified: {} },
+  sync: { dirty: false, lastOk: '', lastError: '', running: false },
   filter: { tier: 'all', status: 'active', q: '' },
 };
 
@@ -64,6 +68,11 @@ async function load() {
   S.settings = { ...DEFAULT_SETTINGS, ...(await db.getMeta('settings', {})) };
   S.rules = await db.getMeta('rules', DEFAULT_RULES);
   S.rem = { done: {}, snoozed: {}, notified: {}, ...(await db.getMeta('reminderState', {})) };
+  S.sync = { ...S.sync, ...(await db.getMeta('syncState', {})), running: false };
+  if (!S.settings.sheetSecret) {
+    S.settings.sheetSecret = newSecret();
+    await db.setMeta('settings', S.settings);
+  }
 }
 
 const findItem = (id) => S.items.find((i) => i.id === id);
@@ -72,6 +81,65 @@ async function saveItem(item) {
   item.updatedAt = new Date().toISOString();
   if (!S.items.includes(item)) S.items.push(item);
   await db.put('items', item);
+  scheduleSync();
+}
+
+// ---------- Google Sheets sync ----------
+// Every change marks the data dirty; a debounced push sends a full snapshot.
+let syncTimer;
+function scheduleSync(delay = 2500) {
+  if (!S.settings.sheetUrl) return;
+  if (!S.sync.dirty) {
+    S.sync.dirty = true;
+    db.setMeta('syncState', { ...S.sync, running: false });
+  }
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(runSync, delay);
+}
+
+async function runSync({ manual = false } = {}) {
+  if (!S.settings.sheetUrl || S.sync.running) return;
+  if (!navigator.onLine) {
+    S.sync.lastError = 'Offline — will sync when you are back online.';
+    updateSyncStatus();
+    return;
+  }
+  S.sync.running = true;
+  updateSyncStatus();
+  try {
+    await pushToSheet(S.settings.sheetUrl, S.settings.sheetSecret, S.items);
+    S.sync.dirty = false;
+    S.sync.lastOk = new Date().toISOString();
+    S.sync.lastError = '';
+    if (manual) toast('Spreadsheet updated ✅');
+  } catch (e) {
+    S.sync.lastError = e.message;
+    if (manual) toast(e.message, 6000);
+  } finally {
+    S.sync.running = false;
+    await db.setMeta('syncState', { ...S.sync, running: false });
+    updateSyncStatus();
+  }
+}
+
+function syncStatusText() {
+  if (!S.settings.sheetUrl) return '';
+  if (S.sync.running) return '☁️ Updating spreadsheet…';
+  if (S.sync.lastError) return `⚠️ Spreadsheet not updated: ${S.sync.lastError}`;
+  if (S.sync.dirty) return '☁️ Spreadsheet update pending…';
+  if (S.sync.lastOk) {
+    const mins = Math.round((Date.now() - new Date(S.sync.lastOk)) / 60000);
+    return `☁️ Spreadsheet up to date (${mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : new Date(S.sync.lastOk).toLocaleString()})`;
+  }
+  return '☁️ Spreadsheet connected — not synced yet';
+}
+
+function updateSyncStatus() {
+  for (const el of $$('[data-sync-status]')) {
+    el.textContent = syncStatusText();
+    el.classList.toggle('sync-error', !!S.sync.lastError && !S.sync.running);
+    el.hidden = !S.settings.sheetUrl;
+  }
 }
 
 const saveTimers = new Map();
@@ -215,6 +283,7 @@ function setView(title, html, { back } = {}) {
   old.replaceWith(v);
   v.innerHTML = html;
   window.scrollTo(0, 0);
+  updateSyncStatus();
   hydratePhotos(v);
   return v;
 }
@@ -263,7 +332,8 @@ function viewList() {
       ${TIERS.map((t) => `<button class="chip tier-${t.id} ${String(f.tier) === String(t.id) ? 'on' : ''}" data-tier="${t.id}">${t.short} <small>${tierCount(t.id)}</small></button>`).join('')}
     </div>
     <input class="search" type="search" placeholder="Search items" value="${h(f.q)}" id="q">
-    <ul class="items" id="item-list">${listHTML()}</ul>`;
+    <ul class="items" id="item-list">${listHTML()}</ul>
+    <p class="small muted sync-line" data-sync-status></p>`;
   const v = setView('My Items', html);
   v.onclick = (e) => {
     const s = e.target.closest('[data-status]');
@@ -713,6 +783,7 @@ function bindItem(v, item) {
         for (const p of item.photos) await db.del('photos', p);
         await db.del('items', item.id);
         S.items = S.items.filter((i) => i !== item);
+        scheduleSync();
         location.hash = '#/';
         return;
       }
@@ -1073,6 +1144,24 @@ function viewSettings() {
       <div class="btn-row"><button class="btn primary" id="add-rule">Add rule</button><button class="btn" id="reset-rules">Reset to defaults</button></div>
     </div></details>
 
+    <details class="card section" ${st.sheetUrl ? '' : 'open'}><summary>📊 Google Sheets sync</summary><div class="section-body">
+      <p class="small muted">Keep a live copy of every item and listing in a Google Sheet. After any change, the app rewrites the sheet's <b>Items</b> and <b>Listings</b> tabs (edits made in the sheet itself get overwritten, so make changes here). Photos stay on your phone.</p>
+      <ol class="small steps">
+        <li>On a computer, create a new Google Sheet at <a href="https://sheets.new" target="_blank" rel="noopener">sheets.new</a> and name it, e.g. "Resell listings".</li>
+        <li>In the sheet: <b>Extensions → Apps Script</b>. Delete what's there and paste the script: <button class="btn small" id="copy-script">📋 Copy script</button></li>
+        <li>Click 💾 Save, then <b>Deploy → New deployment</b> → ⚙️ <b>Web app</b>. Set <b>Execute as: Me</b> and <b>Who has access: Anyone</b>, then <b>Deploy</b>.</li>
+        <li>Google asks you to authorize: choose your account → <b>Advanced → Go to … (unsafe)</b> → <b>Allow</b>. (It says "unsafe" because it's your own unpublished script.)</li>
+        <li>Copy the <b>Web app URL</b> (ends in <code>/exec</code>) and paste it below.</li>
+      </ol>
+      <label>Web app URL<input id="s-sheetUrl" type="url" inputmode="url" value="${h(st.sheetUrl)}" placeholder="https://script.google.com/macros/s/…/exec"></label>
+      <div class="btn-row">
+        <button class="btn primary" id="sync-now" ${st.sheetUrl ? '' : 'disabled'}>🔄 Sync now</button>
+        ${st.sheetUrl ? '<button class="btn" id="sync-off">Disconnect</button>' : ''}
+      </div>
+      <p class="small muted" data-sync-status></p>
+      <details class="small"><summary>Security</summary><p class="muted">The script only accepts updates that include this phone's private sync code, which is built into the script you copy. Anyone with the URL can't change your sheet without it. To reset the code, tap <button class="btn small" id="new-secret">New sync code</button>, then copy the script again and redeploy (Deploy → Manage deployments → ✏️ → Version: New).</p></details>
+    </div></details>
+
     <details class="card section"><summary>💾 Your data</summary><div class="section-body">
       <p class="small muted">Everything (items, photos, listings) is saved on this phone only. Back up regularly, especially before clearing browser data or switching phones.</p>
       <div class="btn-col">
@@ -1150,6 +1239,37 @@ function viewSettings() {
     viewSettings();
   };
 
+  $('#copy-script').onclick = () => copy(scriptSource(st.sheetSecret));
+  $('#s-sheetUrl').onchange = async (e) => {
+    const url = e.target.value.trim();
+    if (url && !isWebAppUrl(url)) {
+      toast('That URL should start with https://script.google.com/macros/s/ and end with /exec', 5000);
+      return;
+    }
+    st.sheetUrl = url;
+    await saveSettings();
+    S.sync = { ...S.sync, dirty: !!url, lastError: '', lastOk: '' };
+    viewSettings();
+    if (url) runSync({ manual: true });
+  };
+  const syncNow = $('#sync-now');
+  if (syncNow) syncNow.onclick = () => runSync({ manual: true });
+  const off = $('#sync-off');
+  if (off) {
+    off.onclick = async () => {
+      if (!confirm('Stop updating the Google Sheet? The sheet keeps its current contents.')) return;
+      st.sheetUrl = '';
+      await saveSettings();
+      viewSettings();
+    };
+  }
+  $('#new-secret').onclick = async () => {
+    if (!confirm('Make a new sync code? The current script will stop accepting updates until you paste the new script and redeploy.')) return;
+    st.sheetSecret = newSecret();
+    await saveSettings();
+    toast('New code made — tap "Copy script" and redeploy.', 5000);
+  };
+
   $('#export').onclick = () => busy('Preparing backup…', exportBackup);
   $('#import').onchange = (e) => busy('Restoring…', () => importBackup(e.target.files[0]));
   $('#csv').onclick = exportCSV;
@@ -1194,6 +1314,7 @@ async function importBackup(file) {
   if (data.rules) await db.setMeta('rules', data.rules);
   if (data.reminderState) await db.setMeta('reminderState', data.reminderState);
   await load();
+  scheduleSync(500);
   toast('Backup restored.');
   render();
 }
@@ -1217,6 +1338,8 @@ async function boot() {
   await render();
   checkNotifications();
   setInterval(checkNotifications, 5 * 60 * 1000);
+  if (S.sync.dirty) runSync();
+  window.addEventListener('online', () => S.sync.dirty && runSync());
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') checkNotifications();
   });
