@@ -100,3 +100,7 @@ test('rejects odd photo ids', () => {
   const r = script.doPost({ secret: SECRET, action: 'photo-put', id: '../evil', data: 'eA==' });
   assert.equal(r.ok, false);
 });
+
+test('authorizeDrive exists so users can grant Drive permission from the editor', () => {
+  assert.match(scriptSource('x'), /function authorizeDrive\(\)/);
+});

@@ -1449,6 +1449,7 @@ function viewSettings() {
         <li>In the sheet: <b>Extensions → Apps Script</b>. Delete what's there and paste the script: <button class="btn small" id="copy-script">📋 Copy script</button></li>
         <li>Click 💾 Save, then <b>Deploy → New deployment</b> → ⚙️ <b>Web app</b>. Set <b>Execute as: Me</b> and <b>Who has access: Anyone</b>, then <b>Deploy</b>.</li>
         <li>Google asks you to authorize: choose your account → <b>Advanced → Go to … (unsafe)</b> → <b>Allow</b>. (It says "unsafe" because it's your own unpublished script.)</li>
+        <li>For Drive backups: in the editor pick <b>authorizeDrive</b> in the drop-down next to ▶ Run, click <b>▶ Run</b>, and allow access the same way.</li>
         <li>Copy the <b>Web app URL</b> (ends in <code>/exec</code>) and paste it below. The app then tests it and shows which sheet it's connected to.</li>
       </ol>
       <p class="small muted">Changed the script later? It only takes effect after <b>Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy</b>.</p>

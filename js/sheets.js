@@ -170,6 +170,8 @@ export function newSecret() {
 
 export class SyncError extends Error {}
 
+const DRIVE_PERMISSION = 'Google hasn\'t given the script permission to use Drive yet. In Apps Script, pick the function "authorizeDrive" (or "backupFolder") in the drop-down next to ▶ Run, click ▶ Run, then Review permissions → your account → Advanced → Go to … (unsafe) → Allow. No new deployment is needed — then tap Back up now again.';
+
 const OLD_SCRIPT = 'Your Google script is an older version. In the app tap Copy script, paste it into Apps Script, then Deploy → Manage deployments → ✏️ → Version: New version → Deploy.';
 
 // POST one request to the script and return its JSON reply.
@@ -193,6 +195,7 @@ async function callScript(url, secret, payload) {
   if (!data.ok) {
     if (data.error === 'bad secret') throw new SyncError('The sync code in your Google script doesn\'t match this app. Copy the script again and deploy a new version — or, on a new phone, enter the sync code from your old one.');
     if (payload.action && /reading 'header'|unknown action/.test(String(data.error))) throw new SyncError(OLD_SCRIPT);
+    if (/permission to call DriveApp|auth\/drive/.test(String(data.error))) throw new SyncError(DRIVE_PERMISSION);
     throw new SyncError(`Google error: ${data.error}`);
   }
   return data;
@@ -262,6 +265,12 @@ export function scriptSource(secret) {
 const SYNC_CODE = '${secret}';
 const BACKUP_FOLDER = 'Resell backups';
 const KEEP_BACKUPS = 10;
+
+// Run this once from the editor (▶ Run) so Google asks for Drive permission for backups.
+function authorizeDrive() {
+  backupFolder();
+  Logger.log('Drive access granted — backups are ready.');
+}
 
 function doPost(e) {
   const lock = LockService.getScriptLock();
