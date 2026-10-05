@@ -108,7 +108,7 @@ input, select, textarea {
   font: inherit; font-size: 16px; color: var(--text);
   background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
 }
-input[type=checkbox] { width: 22px; height: 22px; margin: 0; flex: none; accent-color: var(--brand); }
+input[type=checkbox], input[type=radio] { width: 22px; height: 22px; margin: 0; flex: none; accent-color: var(--brand); }
 textarea { resize: vertical; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand); outline-offset: -1px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
@@ -246,3 +246,6 @@ code { font-size: .85em; background: var(--bg); padding: 1px 4px; border-radius:
 .ship-opts li { padding: 8px 0; border-top: 1px solid var(--line); }
 .ship-opts li.best b:first-child { color: var(--ok); }
 .btn.small.danger { margin-left: auto; }
+
+.center { text-align: center; }
+#sync-code { word-break: break-all; }

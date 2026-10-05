@@ -69,12 +69,20 @@ stays on your phone.
   photos), one-tap copy, and *Improve with Claude* with optional custom instructions
   and undo.
 - **Live Google Sheet** (optional): keeps a Google Sheet updated with an **Items**
-  tab (one row per item: tier, status, prices, sold info) and a **Listings** tab
+  tab (one row per item: tier, status, prices, sold info, listing title and
+  description, details and notes) and a **Listings** tab
   (one row per listing: platform, URL, posting date, price, status). The sheet is
   rewritten a few seconds after every change; changes made while offline are sent
   when you're back online. Set it up in **Settings → Google Sheets sync**.
-- **Backup**: download/restore a full backup (photos included) and export a CSV
-  spreadsheet of all listings.
+- **Google Drive backups** (with the Google Sheet connected): full backups,
+  including listing text and photos, go into a **Resell backups** folder next to
+  your sheet. One is made automatically once a day when something has changed, and
+  you can tap **Back up to Google Drive now** at any time. The newest 10 are kept, and
+  each photo is uploaded only once. **Restore from Google Drive** brings everything
+  back, including onto a new phone, using the Web app URL and your sync code (shown
+  under Settings → Google Sheets sync → Security & sync code).
+- **Backup file**: download/restore a full backup file (photos included) and export a
+  CSV spreadsheet of all listings.
 
 ## Put it on your phone
 

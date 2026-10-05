@@ -5,7 +5,10 @@ import { DEFAULT_RULES, ACTIONS, TRIGGERS, computeReminders, isDue, toICS, isoDa
 import { generateTitle, generateDescription, titleCase, shorten, fixShouting, tidy, lint, limitsFor } from './writer.js';
 import { MODELS, analyzeItem, improveListing, callClaude, marketCheck } from './ai.js';
 import { BOXES, CALCULATORS, estimateShipping, shippingAdvice } from './shipping.js';
-import { pushToSheet, scriptSource, newSecret, testSheet, urlProblem } from './sheets.js';
+import { pushToSheet, scriptSource, newSecret, testSheet, urlProblem, backupToDrive, listDriveBackups, fetchDriveBackup, fetchDrivePhoto, SCRIPT_VERSION } from './sheets.js';
+
+// Shown in Settings so it's easy to tell which version a phone is running.
+export const APP_VERSION = '2026.10.05-backups';
 
 // ---------- State ----------
 const DEFAULT_SETTINGS = {
@@ -27,7 +30,7 @@ const S = {
   settings: { ...DEFAULT_SETTINGS },
   rules: DEFAULT_RULES,
   rem: { done: {}, snoozed: {}, notified: {} },
-  sync: { dirty: false, lastOk: '', lastError: '', running: false },
+  sync: { dirty: false, lastOk: '', lastError: '', running: false, backupDirty: true, lastBackup: '', lastBackupError: '', backingUp: false },
   filter: { tier: 'all', status: 'active', q: '' },
 };
 
@@ -90,6 +93,7 @@ async function saveItem(item) {
 let syncTimer;
 function scheduleSync(delay = 2500) {
   if (!S.settings.sheetUrl) return;
+  S.sync.backupDirty = true;
   if (!S.sync.dirty) {
     S.sync.dirty = true;
     db.setMeta('syncState', { ...S.sync, running: false });
@@ -114,6 +118,7 @@ async function runSync({ manual = false } = {}) {
     S.sync.lastOk = new Date().toISOString();
     S.sync.lastError = '';
     if (manual) toast(`Spreadsheet updated ✅${r.sheet ? ` (${r.sheet})` : ''}`);
+    setTimeout(maybeAutoBackup, 1000);
   } catch (e) {
     S.sync.lastError = e.message;
     if (manual) toast(e.message, 6000);
@@ -144,6 +149,131 @@ function updateSyncStatus() {
   }
 }
 
+// ---------- Google Drive backups ----------
+const DAY_MS = 86400000;
+let autoBackupTried = false;
+
+function backupStatusText() {
+  if (!S.settings.sheetUrl) return 'Connect your Google Sheet above to turn on Drive backups.';
+  if (S.sync.backingUp) return '☁️ Backing up to Google Drive…';
+  if (S.sync.lastBackupError) return `⚠️ Last backup failed: ${S.sync.lastBackupError}`;
+  if (S.sync.lastBackup) return `☁️ Last Drive backup: ${new Date(S.sync.lastBackup).toLocaleString()}${S.sync.backupDirty ? ' (changes since then)' : ''}`;
+  return 'No Drive backup yet.';
+}
+
+function updateBackupStatus() {
+  for (const el of $$('[data-backup-status]')) {
+    el.textContent = backupStatusText();
+    el.classList.toggle('sync-error', !!S.sync.lastBackupError && !S.sync.backingUp);
+  }
+}
+
+// Automatic: at most once a day, only when something changed, and once per app session.
+function maybeAutoBackup() {
+  if (!S.settings.sheetUrl || S.sync.backingUp || autoBackupTried || !navigator.onLine) return;
+  if (!S.sync.backupDirty) return;
+  if (S.sync.lastBackup && Date.now() - new Date(S.sync.lastBackup) < DAY_MS) return;
+  autoBackupTried = true;
+  runBackup({ manual: false });
+}
+
+async function photoBase64(id) {
+  const row = await db.get('photos', id);
+  if (!row) return null;
+  return (await blobToDataURL(row.blob)).split(',')[1];
+}
+
+async function runBackup({ manual }) {
+  if (!S.settings.sheetUrl || S.sync.backingUp) return;
+  S.sync.backingUp = true;
+  updateBackupStatus();
+  const work = async () => {
+    try {
+      const r = await backupToDrive({
+        url: S.settings.sheetUrl,
+        secret: S.settings.sheetSecret,
+        items: S.items,
+        settings: S.settings,
+        rules: S.rules,
+        reminderState: S.rem,
+        getPhoto: photoBase64,
+        onProgress: (t) => manual && ($('#busy-label').textContent = t),
+      });
+      S.sync.lastBackup = r.at || new Date().toISOString();
+      S.sync.backupDirty = false;
+      S.sync.lastBackupError = '';
+      if (manual) toast(`Backed up ${r.items} item${r.items === 1 ? '' : 's'} to Google Drive ✅${r.photosUploaded ? ` (${r.photosUploaded} new photo${r.photosUploaded === 1 ? '' : 's'})` : ''}`, 5000);
+    } catch (e) {
+      S.sync.lastBackupError = e.message;
+      if (manual) toast('Backup failed — details are in Settings.', 5000);
+    } finally {
+      S.sync.backingUp = false;
+      await db.setMeta('syncState', { ...S.sync, running: false, backingUp: false });
+      updateBackupStatus();
+    }
+  };
+  if (manual) await busy('Backing up to Google Drive…', work);
+  else await work();
+}
+
+function restoreDialog() {
+  const st = S.settings;
+  dialog(
+    `<h2>Restore from Google Drive</h2>
+     <p class="small muted">Brings back items, listings, photos and settings from a Drive backup. Items already on this phone with the same ID are replaced; others are kept.</p>
+     <label>Web app URL<input name="url" type="url" inputmode="url" value="${h(st.sheetUrl)}" placeholder="https://script.google.com/macros/s/…/exec" required></label>
+     <label>Sync code <small class="muted">(from the old phone: Settings → Google Sheets sync → Security, or the SYNC_CODE line in your Google script)</small><input name="code" value="${h(st.sheetSecret)}" autocomplete="off" required></label>
+     <div id="restore-list"></div>
+     <div class="btn-row end">
+       <button class="btn" value="cancel" formnovalidate>Cancel</button>
+       <button class="btn" value="find">Find backups</button>
+       <button class="btn primary" value="restore" id="restore-go" disabled>Restore</button>
+     </div>`,
+    async (action, data) => {
+      const url = data.url.trim();
+      const code = data.code.trim();
+      if (action === 'find') {
+        const list = await busy('Looking for backups…', () => listDriveBackups(url, code));
+        if (!list) return false;
+        $('#restore-list').innerHTML = list.length
+          ? `<p class="small"><b>Choose a backup:</b></p>${list.map((b, i) => `<label class="check"><input type="radio" name="backupId" value="${h(b.id)}" ${i ? '' : 'checked'}> ${h(new Date(b.at).toLocaleString())}${b.items != null ? ` · ${b.items} item${b.items === 1 ? '' : 's'}` : ''} · ${Math.max(1, Math.round(b.size / 1024))} KB</label>`).join('')}`
+          : '<p class="small">No backups found in the "Resell backups" folder yet.</p>';
+        $('#restore-go').disabled = !list.length;
+        return false;
+      }
+      if (action !== 'restore' || !data.backupId) return false;
+      if (!confirm('Restore this backup onto this phone?')) return false;
+      const ok = await busy('Downloading backup…', async () => {
+        const backup = await fetchDriveBackup(url, code, data.backupId);
+        const ids = backup.photoIds || [];
+        let n = 0;
+        for (const id of ids) {
+          n++;
+          if (await db.get('photos', id)) continue;
+          $('#busy-label').textContent = `Downloading photos ${n} of ${ids.length}…`;
+          const b64 = await fetchDrivePhoto(url, code, id);
+          if (b64) await db.put('photos', { id, blob: await (await fetch('data:image/jpeg;base64,' + b64)).blob() });
+        }
+        $('#busy-label').textContent = 'Restoring items…';
+        for (const item of backup.items) await db.put('items', item);
+        const keep = { apiKey: S.settings.apiKey };
+        await db.setMeta('settings', { ...S.settings, ...(backup.settings || {}), ...keep, sheetUrl: url, sheetSecret: code });
+        if (backup.rules) await db.setMeta('rules', backup.rules);
+        if (backup.reminderState) await db.setMeta('reminderState', backup.reminderState);
+        return backup;
+      });
+      if (!ok) return false;
+      await load();
+      S.sync.lastBackup = ok.createdAt;
+      S.sync.backupDirty = false;
+      await db.setMeta('syncState', { ...S.sync, running: false, backingUp: false });
+      toast(`Restored ${ok.items.length} items from Google Drive ✅`, 5000);
+      render();
+      scheduleSync(500);
+    }
+  );
+}
+
 // Ask the script which spreadsheet it's attached to, without writing anything.
 async function runSheetTest() {
   let error = '';
@@ -161,9 +291,11 @@ async function runSheetTest() {
   if (!r) {
     S.sync.lastError = error;
     toast('Connection test failed — details are under the buttons.', 5000);
-  } else if (!r.sheet) {
-    toast('Connected ✅ — but this is the older script. Copy the script again and redeploy to see which sheet it uses.', 7000);
+  } else if (!r.sheet || (r.version || 1) < SCRIPT_VERSION) {
+    S.sync.scriptOutdated = true;
+    toast('Connected ✅ — but your Google script is an older version. Copy the script again and deploy a new version to get Drive backups.', 8000);
   } else {
+    S.sync.scriptOutdated = false;
     toast(`Connected ✅ to "${r.sheet}"`, 5000);
   }
   await db.setMeta('syncState', { ...S.sync, running: false });
@@ -1328,7 +1460,17 @@ function viewSettings() {
         ${st.sheetUrl ? '<button class="btn" id="sync-off">Disconnect</button>' : ''}
       </div>
       <p class="small muted" data-sync-status></p>
-      <details class="small"><summary>Security</summary><p class="muted">The script only accepts updates that include this phone's private sync code, which is built into the script you copy. Anyone with the URL can't change your sheet without it. To reset the code, tap <button class="btn small" id="new-secret">New sync code</button>, then copy the script again and redeploy (Deploy → Manage deployments → ✏️ → Version: New).</p></details>
+      <h3>☁️ Google Drive backups</h3>
+      <p class="small muted">Full backups (items, listings, listing text, photos and settings) go into a <b>Resell backups</b> folder next to your sheet. One is made automatically once a day when something has changed; the latest 10 are kept.</p>
+      ${S.sync.scriptOutdated ? '<div class="note">Your Google script is an older version. Tap <b>Copy script</b>, paste it into Apps Script, then <b>Deploy → Manage deployments → ✏️ → Version: New version → Deploy</b>.</div>' : ''}
+      <p class="small" data-backup-status></p>
+      <div class="btn-row">
+        <button class="btn primary" id="backup-now" ${st.sheetUrl ? '' : 'disabled'}>☁️ Back up now</button>
+        <button class="btn" id="restore-drive">⤵️ Restore from Drive</button>
+      </div>
+      <details class="small"><summary>Security &amp; sync code</summary><p class="muted">The script only accepts requests that include this phone's private sync code, which is built into the script you copy. Anyone with the URL can't read or change your data without it.</p>
+        <p>Your sync code: <code id="sync-code">${h(st.sheetSecret)}</code> <button class="btn small" id="copy-code">Copy</button><br><span class="muted">Keep it somewhere safe (e.g. your password manager). On a new phone, enter it in <b>Restore from Drive</b> to get everything back without changing the script.</span></p>
+        <p class="muted">To reset the code, tap <button class="btn small" id="new-secret">New sync code</button>, then copy the script again and deploy a new version (Deploy → Manage deployments → ✏️ → Version: New).</p></details>
     </div></details>
 
     <details class="card section"><summary>💾 Your data</summary><div class="section-body">
@@ -1336,12 +1478,16 @@ function viewSettings() {
       <div class="btn-col">
         <button class="btn" id="export">⬇️ Download full backup</button>
         <label class="btn">⬆️ Restore backup<input type="file" accept="application/json,.json" id="import" hidden></label>
+        <button class="btn" id="backup-now-2" ${st.sheetUrl ? '' : 'disabled'}>☁️ Back up to Google Drive now</button>
+        <p class="small" data-backup-status></p>
+        <button class="btn" id="restore-drive-2">⤵️ Restore from Google Drive</button>
         <button class="btn" id="csv">⬇️ Export listings spreadsheet (CSV)</button>
         <button class="btn danger" id="wipe">Delete all data</button>
       </div>
       <p class="small muted" id="usage"></p>
     </div></details>
 
+    <p class="small muted center">App version ${APP_VERSION} · script version ${SCRIPT_VERSION}</p>
     <details class="card section"><summary>📱 Install on your phone</summary><div class="section-body small">
       <p><b>iPhone (Safari):</b> tap Share → <i>Add to Home Screen</i>.</p>
       <p><b>Android (Chrome):</b> tap ⋮ → <i>Install app</i> / <i>Add to Home screen</i>.</p>
@@ -1446,6 +1592,14 @@ function viewSettings() {
   $('#export').onclick = () => busy('Preparing backup…', exportBackup);
   $('#import').onchange = (e) => busy('Restoring…', () => importBackup(e.target.files[0]));
   $('#csv').onclick = exportCSV;
+  $('#restore-drive').onclick = restoreDialog;
+  $('#restore-drive-2').onclick = restoreDialog;
+  $('#copy-code').onclick = () => copy(st.sheetSecret);
+  const bk = $('#backup-now');
+  if (bk) bk.onclick = () => runBackup({ manual: true });
+  const bk2 = $('#backup-now-2');
+  if (bk2) bk2.onclick = () => runBackup({ manual: true });
+  updateBackupStatus();
   $('#wipe').onclick = async () => {
     if (!confirm('Delete ALL items, photos and settings from this phone?')) return;
     if (!confirm('Really delete everything? Download a backup first if unsure.')) return;
@@ -1512,6 +1666,7 @@ async function boot() {
   checkNotifications();
   setInterval(checkNotifications, 5 * 60 * 1000);
   if (S.sync.dirty) runSync();
+  else setTimeout(maybeAutoBackup, 3000);
   window.addEventListener('online', () => S.sync.dirty && runSync());
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') checkNotifications();
