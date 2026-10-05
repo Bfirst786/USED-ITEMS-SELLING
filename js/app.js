@@ -4,7 +4,8 @@ import { PLATFORMS, recommendPlatforms, platformName, matchPlatformKey, modeLabe
 import { DEFAULT_RULES, ACTIONS, TRIGGERS, computeReminders, isDue, toICS, isoDay, daysBetween, toDate } from './reminders.js';
 import { generateTitle, generateDescription, titleCase, shorten, fixShouting, tidy, lint, limitsFor } from './writer.js';
 import { MODELS, analyzeItem, improveListing, callClaude, marketCheck } from './ai.js';
-import { pushToSheet, scriptSource, newSecret, isWebAppUrl } from './sheets.js';
+import { BOXES, CALCULATORS, estimateShipping, shippingAdvice } from './shipping.js';
+import { pushToSheet, scriptSource, newSecret, testSheet, urlProblem } from './sheets.js';
 
 // ---------- State ----------
 const DEFAULT_SETTINGS = {
@@ -107,11 +108,12 @@ async function runSync({ manual = false } = {}) {
   S.sync.running = true;
   updateSyncStatus();
   try {
-    await pushToSheet(S.settings.sheetUrl, S.settings.sheetSecret, S.items);
+    const r = await pushToSheet(S.settings.sheetUrl, S.settings.sheetSecret, S.items);
+    if (r.sheet) S.sync.sheet = { name: r.sheet, url: r.sheetUrl };
     S.sync.dirty = false;
     S.sync.lastOk = new Date().toISOString();
     S.sync.lastError = '';
-    if (manual) toast('Spreadsheet updated ✅');
+    if (manual) toast(`Spreadsheet updated ✅${r.sheet ? ` (${r.sheet})` : ''}`);
   } catch (e) {
     S.sync.lastError = e.message;
     if (manual) toast(e.message, 6000);
@@ -129,7 +131,7 @@ function syncStatusText() {
   if (S.sync.dirty) return '☁️ Spreadsheet update pending…';
   if (S.sync.lastOk) {
     const mins = Math.round((Date.now() - new Date(S.sync.lastOk)) / 60000);
-    return `☁️ Spreadsheet up to date (${mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : new Date(S.sync.lastOk).toLocaleString()})`;
+    return `☁️ ${S.sync.sheet ? `"${S.sync.sheet.name}"` : 'Spreadsheet'} up to date (${mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : new Date(S.sync.lastOk).toLocaleString()})`;
   }
   return '☁️ Spreadsheet connected — not synced yet';
 }
@@ -140,6 +142,33 @@ function updateSyncStatus() {
     el.classList.toggle('sync-error', !!S.sync.lastError && !S.sync.running);
     el.hidden = !S.settings.sheetUrl;
   }
+}
+
+// Ask the script which spreadsheet it's attached to, without writing anything.
+async function runSheetTest() {
+  let error = '';
+  const r = await busy('Checking the Google connection…', async () => {
+    try {
+      const data = await testSheet(S.settings.sheetUrl);
+      if (data.sheet) S.sync.sheet = { name: data.sheet, url: data.sheetUrl };
+      S.sync.lastError = '';
+      return data;
+    } catch (e) {
+      error = e.message;
+      return null;
+    }
+  });
+  if (!r) {
+    S.sync.lastError = error;
+    toast('Connection test failed — details are under the buttons.', 5000);
+  } else if (!r.sheet) {
+    toast('Connected ✅ — but this is the older script. Copy the script again and redeploy to see which sheet it uses.', 7000);
+  } else {
+    toast(`Connected ✅ to "${r.sheet}"`, 5000);
+  }
+  await db.setMeta('syncState', { ...S.sync, running: false });
+  if (location.hash === '#/settings') viewSettings();
+  return !!r;
 }
 
 const saveTimers = new Map();
@@ -455,6 +484,7 @@ function viewItem(id) {
     ${section('details', '📝 Details', detailsHTML(item), !item.title)}
     ${section('price', '💲 Price', `<div id="price-body">${priceHTML(item)}</div>`, true)}
     ${section('where', '🛒 Where to sell', `<div id="where-body">${whereHTML(item)}</div>`, true)}
+    ${section('ship', `🚚 Shipping estimate${item.shipping?.estimate ? ` <span class="badge">~${money(item.shipping.estimate.typical)}</span>` : ''}`, shippingHTML(item), false)}
     ${section('listings', '🔗 Listings', `<div id="listings-body">${listingsHTML(item)}</div>`, true)}
     ${section('write', '✍️ Write the listing', writerHTML(item), false)}
     ${section('status', '📦 Status', `<div id="status-body">${statusHTML(item)}</div>`, item.status === 'sold')}
@@ -571,8 +601,46 @@ function marketHTML(item) {
     </div>`;
 }
 
+function shippingHTML(item) {
+  const sh = item.shipping || {};
+  const num = (k, label, attrs = '') => `<label>${label}<input data-ship="${k}" type="number" inputmode="decimal" min="0" value="${h(sh[k])}" ${attrs}></label>`;
+  return `
+    ${item.bulky ? '<div class="note">This item is marked bulky — local pickup is usually the better deal. You can still estimate shipping below.</div>' : ''}
+    <p class="small muted">Only needed if you'll ship it. Weigh it packed (item + box + padding), or add the box weight shown.</p>
+    <label>Box<select data-ship="box">${Object.entries(BOXES).map(([k, b]) => `<option value="${k}" ${k === (sh.box || 'custom') ? 'selected' : ''}>${h(b.label)}</option>`).join('')}</select></label>
+    <div class="grid3">${num('l', 'Length (in)')}${num('w', 'Width (in)')}${num('h', 'Height (in)')}</div>
+    <div class="grid2">${num('lb', 'Weight (lb)', 'step="1"')}${num('oz', 'Ounces', 'step="1" max="15"')}</div>
+    <div id="ship-results">${shippingResultsHTML(item)}</div>
+    <div class="links small">Exact prices: ${CALCULATORS.map((c) => `<a href="${c.url}" target="_blank" rel="noopener">${c.label}</a>`).join(' · ')}</div>`;
+}
+
+function shippingResultsHTML(item) {
+  const sh = item.shipping || {};
+  if (!sh.lb && !sh.oz) return '';
+  const est = estimateShipping(sh);
+  if (!est.ok) return `<div class="note">${h(est.reason)}</div>`;
+  const price = item.askingPrice || item.suggested?.target;
+  const adv = shippingAdvice(est, price);
+  return `
+    <div class="suggest">
+      <div class="suggest-top"><span class="muted">Rough estimate</span><b>${money(est.low)}–${money(est.high)}</b></div>
+      <ul class="ship-opts">${est.options.map((o) => `<li class="${o.key === est.best ? 'best' : ''}"><b>${h(o.name)}</b>${o.key === est.best ? ' <span class="badge status-listed">cheapest</span>' : ''}<br>
+        ${o.unavailable ? `<span class="small muted">${h(o.unavailable)}</span>` : `${money(o.low)}–${money(o.high)} <span class="small muted">· billed as ${o.billable} lb</span>`}
+        ${o.notes.map((n) => `<div class="small muted">${h(n)}</div>`).join('')}</li>`).join('')}</ul>
+      <p class="small muted">Low end = nearby, high end = across the country. Based on typical discounted label prices; check a calculator before you commit.</p>
+      ${adv ? `<div class="suggest-row"><span>Charge buyer about <b>${money(adv.chargeBuyer)}</b></span>${adv.freeShippingPrice ? `<span>Or list at <b>${money(adv.freeShippingPrice)}</b> with free shipping</span>` : ''}</div>` : ''}
+      ${adv && adv.worthShipping === false ? '<div class="note">Shipping could cost over half the item\'s price — local pickup is probably better.</div>' : ''}
+      ${est.warnings.map((w) => `<div class="small">⚠️ ${h(w)}</div>`).join('')}
+    </div>`;
+}
+
 function whereHTML(item) {
   const recs = recommendPlatforms(item);
+  // eBay is always offered, even when it isn't a top pick for this item.
+  if (!recs.some((r) => r.key === 'ebay')) {
+    const p = PLATFORMS.ebay;
+    recs.push({ key: 'ebay', name: p.name, mode: p.mode, fees: p.fees, sellUrl: p.sellUrl, reasons: ['Always worth a look — the largest buyer audience'], always: true });
+  }
   const ai = (item.aiPlatforms || []).map(matchPlatformKey).filter(Boolean);
   const listed = new Set((item.listings || []).filter((l) => l.status === 'active').map((l) => l.platform));
   const tier = itemTier(item);
@@ -603,6 +671,7 @@ function listingsHTML(item) {
           ${l.url ? `<button class="btn small" data-act="copy-url" data-id="${l.id}">Copy URL</button>` : ''}
           ${l.status === 'active' ? `<button class="btn small" data-act="renewed" data-id="${l.id}">Renewed today</button>` : ''}
           <button class="btn small" data-act="edit-listing" data-id="${l.id}">Edit</button>
+          <button class="btn small danger" data-act="delete-listing" data-id="${l.id}" aria-label="Delete listing">🗑 Delete</button>
         </div>
       </li>`;
     }).join('')}</ul>` : '<p class="muted small">No listings tracked yet.</p>'}
@@ -682,6 +751,9 @@ function bindItem(v, item) {
       if (f === 'title') $('#title').textContent = item.title || 'Item';
       if (f === 'condition') item.conditionSetByUser = true;
     }
+    if (e.target.dataset.ship && e.target.tagName === 'INPUT') {
+      updateShipping(item, e.target.dataset.ship, e.target.value);
+    }
     if (e.target.id === 'w-title' || e.target.id === 'w-desc') {
       item.draftTitle = $('#w-title').value;
       item.draftDesc = $('#w-desc').value;
@@ -708,6 +780,18 @@ function bindItem(v, item) {
       $('#sec-photos .section-body').innerHTML = photosHTML(item);
       hydratePhotos($('#sec-photos'));
       updateLint(item);
+    }
+    if (t.dataset.ship === 'box') {
+      const b = BOXES[t.value];
+      item.shipping = { ...(item.shipping || {}), box: t.value };
+      if (t.value !== 'custom') {
+        for (const k of ['l', 'w', 'h']) {
+          item.shipping[k] = b[k];
+          $(`[data-ship="${k}"]`).value = b[k];
+        }
+        if (b.pack) toast(`Add about ${b.pack} lb for the box and padding if you weighed the item alone.`, 4000);
+      }
+      updateShipping(item);
     }
     if (t.id === 'w-platform') {
       item.writerPlatform = t.value;
@@ -775,6 +859,17 @@ function bindItem(v, item) {
         return listingDialog(item, null, b.dataset.platform);
       case 'edit-listing':
         return listingDialog(item, item.listings.find((l) => l.id === b.dataset.id));
+      case 'delete-listing': {
+        const l = item.listings.find((x) => x.id === b.dataset.id);
+        if (!l || !confirm(`Delete the ${platformName(l.platform) === l.platform ? l.platformName || 'listing' : platformName(l.platform)} listing from the app?\n\nThis only removes it from your tracking — remember to also take it down on the site itself.`)) return;
+        item.listings = item.listings.filter((x) => x !== l);
+        if (item.status === 'listed' && !item.listings.some((x) => x.status === 'active')) item.status = 'draft';
+        await saveItem(item);
+        refreshItemParts(item);
+        updateNav();
+        toast('Listing deleted');
+        break;
+      }
       case 'renewed': {
         const l = item.listings.find((x) => x.id === b.dataset.id);
         l.refreshedAt = today();
@@ -838,6 +933,16 @@ function bindItem(v, item) {
   });
 
   updateLint(item);
+}
+
+function updateShipping(item, key, value) {
+  item.shipping = { ...(item.shipping || {}) };
+  if (key) item.shipping[key] = value === '' ? '' : Number(value);
+  const est = estimateShipping(item.shipping);
+  item.shipping.estimate = est.ok ? { typical: est.typical, low: est.low, high: est.high, carrier: est.options.find((o) => o.key === est.best).name } : null;
+  $('#ship-results').innerHTML = shippingResultsHTML(item);
+  $('#sec-ship summary').innerHTML = `🚚 Shipping estimate${item.shipping.estimate ? ` <span class="badge">~${money(item.shipping.estimate.typical)}</span>` : ''}`;
+  saveItemSoon(item);
 }
 
 function applyEdit(item, edit) {
@@ -1205,17 +1310,20 @@ function viewSettings() {
       <div class="btn-row"><button class="btn primary" id="add-rule">Add rule</button><button class="btn" id="reset-rules">Reset to defaults</button></div>
     </div></details>
 
-    <details class="card section" ${st.sheetUrl ? '' : 'open'}><summary>📊 Google Sheets sync</summary><div class="section-body">
+    <details class="card section" ${!st.sheetUrl || S.sync.lastError || !S.sync.lastOk ? 'open' : ''}><summary>📊 Google Sheets sync</summary><div class="section-body">
       <p class="small muted">Keep a live copy of every item and listing in a Google Sheet. After any change, the app rewrites the sheet's <b>Items</b> and <b>Listings</b> tabs (edits made in the sheet itself get overwritten, so make changes here). Photos stay on your phone.</p>
       <ol class="small steps">
         <li>On a computer, create a new Google Sheet at <a href="https://sheets.new" target="_blank" rel="noopener">sheets.new</a> and name it, e.g. "Resell listings".</li>
         <li>In the sheet: <b>Extensions → Apps Script</b>. Delete what's there and paste the script: <button class="btn small" id="copy-script">📋 Copy script</button></li>
         <li>Click 💾 Save, then <b>Deploy → New deployment</b> → ⚙️ <b>Web app</b>. Set <b>Execute as: Me</b> and <b>Who has access: Anyone</b>, then <b>Deploy</b>.</li>
         <li>Google asks you to authorize: choose your account → <b>Advanced → Go to … (unsafe)</b> → <b>Allow</b>. (It says "unsafe" because it's your own unpublished script.)</li>
-        <li>Copy the <b>Web app URL</b> (ends in <code>/exec</code>) and paste it below.</li>
+        <li>Copy the <b>Web app URL</b> (ends in <code>/exec</code>) and paste it below. The app then tests it and shows which sheet it's connected to.</li>
       </ol>
+      <p class="small muted">Changed the script later? It only takes effect after <b>Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy</b>.</p>
       <label>Web app URL<input id="s-sheetUrl" type="url" inputmode="url" value="${h(st.sheetUrl)}" placeholder="https://script.google.com/macros/s/…/exec"></label>
+      ${S.sync.sheet ? `<p class="small">Connected to: <a href="${h(S.sync.sheet.url)}" target="_blank" rel="noopener"><b>${h(S.sync.sheet.name)}</b></a></p>` : ''}
       <div class="btn-row">
+        <button class="btn" id="sync-test" ${st.sheetUrl ? '' : 'disabled'}>🔌 Test connection</button>
         <button class="btn primary" id="sync-now" ${st.sheetUrl ? '' : 'disabled'}>🔄 Sync now</button>
         ${st.sheetUrl ? '<button class="btn" id="sync-off">Disconnect</button>' : ''}
       </div>
@@ -1303,16 +1411,19 @@ function viewSettings() {
   $('#copy-script').onclick = () => copy(scriptSource(st.sheetSecret));
   $('#s-sheetUrl').onchange = async (e) => {
     const url = e.target.value.trim();
-    if (url && !isWebAppUrl(url)) {
-      toast('That URL should start with https://script.google.com/macros/s/ and end with /exec', 5000);
+    const problem = url && urlProblem(url);
+    if (problem) {
+      toast(problem, 8000);
       return;
     }
     st.sheetUrl = url;
     await saveSettings();
-    S.sync = { ...S.sync, dirty: !!url, lastError: '', lastOk: '' };
+    S.sync = { ...S.sync, dirty: !!url, lastError: '', lastOk: '', sheet: null };
     viewSettings();
-    if (url) runSync({ manual: true });
+    if (url && (await runSheetTest())) runSync({ manual: true });
   };
+  const test = $('#sync-test');
+  if (test) test.onclick = runSheetTest;
   const syncNow = $('#sync-now');
   if (syncNow) syncNow.onclick = () => runSync({ manual: true });
   const off = $('#sync-off');
@@ -1320,6 +1431,7 @@ function viewSettings() {
     off.onclick = async () => {
       if (!confirm('Stop updating the Google Sheet? The sheet keeps its current contents.')) return;
       st.sheetUrl = '';
+      S.sync.sheet = null;
       await saveSettings();
       viewSettings();
     };

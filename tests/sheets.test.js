@@ -64,3 +64,13 @@ test('generated script embeds the sync code and is valid JavaScript', () => {
   // Compile it (Apps Script globals are only referenced inside functions).
   assert.doesNotThrow(() => new Function(src));
 });
+
+test('explains common wrong URLs', async () => {
+  const { urlProblem } = await import('../js/sheets.js');
+  assert.equal(urlProblem('https://script.google.com/macros/s/AKfyc_x-1/exec'), null);
+  assert.equal(urlProblem('https://script.google.com/a/macros/example.com/s/AKfyc/exec'), null);
+  assert.match(urlProblem('https://docs.google.com/spreadsheets/d/abc/edit'), /spreadsheet itself/);
+  assert.match(urlProblem('https://script.google.com/macros/s/AKfyc/dev'), /\/dev/);
+  assert.match(urlProblem('https://script.google.com/home/projects/abc/edit'), /script editor/);
+  assert.match(urlProblem(''), /Paste/);
+});

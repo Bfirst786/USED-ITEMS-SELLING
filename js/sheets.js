@@ -33,7 +33,7 @@ function listingName(l) {
 export const ITEM_HEADER = [
   'Item ID', 'Item', 'Brand', 'Model', 'Category', 'Condition', 'Price tier', 'Status',
   'Asking price', 'Lowest I\'ll take', 'Suggested price', 'Paid / retail new', 'Sold price', 'Sold date', 'Sold on',
-  'Active listings', 'Platforms', 'First posted', 'Market check', 'Market typical sold', 'Added', 'Last updated',
+  'Active listings', 'Platforms', 'First posted', 'Market check', 'Market typical sold', 'Est. shipping', 'Added', 'Last updated',
 ];
 
 export const LISTING_HEADER = [
@@ -58,7 +58,7 @@ export function buildTables(items) {
       num(i.askingPrice), num(i.floorPrice), num(i.suggested?.target), num(i.originalPrice),
       num(i.soldPrice), day(i.soldDate), i.soldPlatform ? platformName(i.soldPlatform) : soldListing ? listingName(soldListing) : '',
       active.length, [...new Set(ls.map(listingName))].join(', '), posted[0] || '',
-      day(i.marketCheck?.at), num(i.marketCheck?.typicalSold) || '',
+      day(i.marketCheck?.at), num(i.marketCheck?.typicalSold) || '', num(i.shipping?.estimate?.typical) || '',
       day(i.createdAt), day(i.updatedAt || i.createdAt),
     ].map(cell));
     for (const l of ls) {
@@ -75,7 +75,35 @@ export function buildTables(items) {
 }
 
 export function isWebAppUrl(url) {
-  return /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(String(url || '').trim());
+  return /^https:\/\/script\.google\.com\/(a\/macros\/[\w.-]+|macros)\/s\/[\w-]+\/exec$/.test(String(url || '').trim());
+}
+
+// Explain what's wrong with a pasted URL in plain words (null when it looks right).
+export function urlProblem(url) {
+  const u = String(url || '').trim();
+  if (!u) return 'Paste the Web app URL first.';
+  if (isWebAppUrl(u)) return null;
+  if (/docs\.google\.com\/spreadsheets/.test(u)) return 'That\'s the address of the spreadsheet itself. The app needs the Web app URL from Apps Script: Deploy → Manage deployments → copy the URL ending in /exec.';
+  if (/script\.google\.com\/.*\/dev$/.test(u)) return 'That\'s the test (/dev) URL, which only works while you\'re signed in. Use the Web app URL ending in /exec from Deploy → Manage deployments.';
+  if (/script\.google\.com\/(home|d\/)/.test(u)) return 'That\'s the address of the script editor. Use the Web app URL ending in /exec from Deploy → Manage deployments.';
+  return 'That doesn\'t look like a Google Apps Script Web app URL. It should start with https://script.google.com/macros/s/ and end with /exec.';
+}
+
+const ACCESS_HELP = 'Google didn\'t let the app in. In Apps Script open Deploy → Manage deployments → ✏️ Edit, and check "Execute as: Me" and "Who has access: Anyone" (not "Anyone with Google account"). If you never clicked Allow on Google\'s permission screen, run Deploy → New deployment again and finish that step.';
+
+// Check the deployment without changing anything; reports which spreadsheet it writes to.
+export async function testSheet(url) {
+  const problem = urlProblem(url);
+  if (problem) throw new SyncError(problem);
+  let res;
+  try {
+    res = await fetch(url.trim(), { method: 'GET', redirect: 'follow' });
+  } catch {
+    throw new SyncError(navigator.onLine === false ? 'You\'re offline.' : ACCESS_HELP);
+  }
+  const data = await res.json().catch(() => null);
+  if (!data || !data.ok) throw new SyncError(ACCESS_HELP);
+  return data;
 }
 
 export function newSecret() {
@@ -87,17 +115,18 @@ export function newSecret() {
 export class SyncError extends Error {}
 
 export async function pushToSheet(url, secret, items) {
-  if (!isWebAppUrl(url)) throw new SyncError('That doesn\'t look like a Google Apps Script web app URL (it should end in /exec).');
+  const problem = urlProblem(url);
+  if (problem) throw new SyncError(problem);
   const body = JSON.stringify({ secret, ...buildTables(items) });
   let res;
   try {
     // text/plain keeps this a "simple" request, which Apps Script web apps accept from browsers.
     res = await fetch(url.trim(), { method: 'POST', headers: { 'content-type': 'text/plain;charset=utf-8' }, body, redirect: 'follow' });
   } catch {
-    throw new SyncError('Could not reach Google. Check your connection, and that the script is deployed with access set to "Anyone".');
+    throw new SyncError(navigator.onLine === false ? 'You\'re offline.' : ACCESS_HELP);
   }
   const data = await res.json().catch(() => null);
-  if (!data) throw new SyncError('Google answered with something unexpected. Re-check the deployment steps (access must be "Anyone").');
+  if (!data) throw new SyncError(ACCESS_HELP);
   if (!data.ok) throw new SyncError(data.error === 'bad secret' ? 'The sync code in your Google script doesn\'t match this app. Copy the script again and redeploy.' : `Sheet error: ${data.error}`);
   return data;
 }
@@ -114,11 +143,11 @@ function doPost(e) {
   lock.waitLock(20000);
   try {
     const body = JSON.parse(e.postData.contents);
-    if (body.secret !== SYNC_CODE) return reply({ ok: false, error: 'bad secret' });
+    if (body.secret !== SYNC_CODE) return reply(Object.assign({ ok: false, error: 'bad secret' }, sheetInfo()));
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     writeTab(ss, 'Items', body.items);
     writeTab(ss, 'Listings', body.listings);
-    return reply({ ok: true, items: body.items.rows.length, listings: body.listings.rows.length, at: new Date().toISOString() });
+    return reply(Object.assign({ ok: true, items: body.items.rows.length, listings: body.listings.rows.length, at: new Date().toISOString() }, sheetInfo()));
   } catch (err) {
     return reply({ ok: false, error: String(err) });
   } finally {
@@ -127,7 +156,13 @@ function doPost(e) {
 }
 
 function doGet() {
-  return reply({ ok: true, message: 'Resell Assistant sync is set up. Go back to the app and paste this page\\'s URL.' });
+  return reply(Object.assign({ ok: true, app: 'resell-assistant', version: 2, message: 'Resell Assistant sync is set up. Copy this page\\'s URL into the app.' }, sheetInfo()));
+}
+
+// Tells the app which spreadsheet this script is attached to.
+function sheetInfo() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  return { sheet: ss.getName(), sheetUrl: ss.getUrl() };
 }
 
 function writeTab(ss, name, table) {

@@ -240,3 +240,9 @@ code { font-size: .85em; background: var(--bg); padding: 1px 4px; border-radius:
 .comps li .small { width: 100%; }
 .comps a { word-break: break-word; }
 .caveats { margin: 8px 0 0; padding-left: 18px; }
+
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0 8px; }
+.ship-opts { list-style: none; padding: 0; margin: 8px 0; }
+.ship-opts li { padding: 8px 0; border-top: 1px solid var(--line); }
+.ship-opts li.best b:first-child { color: var(--ok); }
+.btn.small.danger { margin-left: auto; }

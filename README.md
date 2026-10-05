@@ -37,9 +37,15 @@ stays on your phone.
   Nextdoor, eBay, Mercari, Poshmark, Depop, Grailed, Swappa, Reverb, Chrono24,
   The RealReal, Chairish, Kaiyo, Pinkbike, Decluttr, FB groups) by category, price
   tier and whether the item is bulky. Each one shows why it was picked and links
-  straight to that platform's sell page.
+  straight to that platform's sell page. eBay is always included.
 - **Listing tracker**: for each platform, store the listing URL, posting date, price
   and status (active / ended / sold). Mark a listing "renewed" when you bump it.
+  Delete a listing from tracking with its 🗑 button.
+- **Shipping estimate** (optional, per item): pick a box preset or enter dimensions and
+  packed weight to get a rough USPS Ground Advantage / UPS Ground price range. It
+  accounts for dimensional weight and flags oversize or overweight boxes, then suggests
+  what to charge the buyer or the price to list at with free shipping. Links to the
+  carriers' calculators are included for exact prices.
 - **Reminders based on rules**: default rules per tier (all editable in Settings):
 
   | Rule | ≤ $100 | $101–$500 | $501+ |
@@ -103,7 +109,9 @@ device like you would any device with a saved password. You can choose Claude Op
 4. **Deploy → New deployment → Web app**, with *Execute as: Me* and *Who has access:
    Anyone*. Authorize it. Google warns that the app is unverified because it's your
    own script, so choose *Advanced → Go to … (unsafe)*.
-5. Paste the **Web app URL** (ends in `/exec`) into the app.
+5. Paste the **Web app URL** (ends in `/exec`) into the app. The app tests the connection and shows
+   the name of the spreadsheet it's writing to. If it can't connect, it says why.
+   Use **Test connection** any time to check again.
 
 The script only accepts updates carrying the private sync code built into it, so
 knowing the URL isn't enough to change your sheet. The sheet is a mirror: make
@@ -139,5 +147,6 @@ npm test       # unit tests (Node 18+) for pricing, platforms, reminders and wri
 | `js/reminders.js` | Reminder rules engine and calendar (.ics) export |
 | `js/writer.js` | Listing drafts, quick edits and the checklist |
 | `js/ai.js` | Claude API calls (photo analysis, listing editing) |
+| `js/shipping.js` | Shipping estimator (box presets, dimensional weight, rate ranges) |
 | `js/sheets.js` | Google Sheets sync: row building, the Apps Script, and sending updates |
 | `sw.js`, `manifest.webmanifest` | Offline support and install-to-home-screen |

@@ -1,5 +1,5 @@
 // Offline support: cache the app shell. Bump VERSION when files change.
-const VERSION = 'resell-v3';
+const VERSION = 'resell-v4';
 const SHELL = [
   './',
   'index.html',
@@ -15,6 +15,7 @@ const SHELL = [
   'js/writer.js',
   'js/ai.js',
   'js/sheets.js',
+  'js/shipping.js',
 ];
 
 self.addEventListener('install', (e) => {
