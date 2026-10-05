@@ -33,7 +33,7 @@ function listingName(l) {
 export const ITEM_HEADER = [
   'Item ID', 'Item', 'Brand', 'Model', 'Category', 'Condition', 'Price tier', 'Status',
   'Asking price', 'Lowest I\'ll take', 'Suggested price', 'Paid / retail new', 'Sold price', 'Sold date', 'Sold on',
-  'Active listings', 'Platforms', 'First posted', 'Added', 'Last updated',
+  'Active listings', 'Platforms', 'First posted', 'Market check', 'Market typical sold', 'Added', 'Last updated',
 ];
 
 export const LISTING_HEADER = [
@@ -58,6 +58,7 @@ export function buildTables(items) {
       num(i.askingPrice), num(i.floorPrice), num(i.suggested?.target), num(i.originalPrice),
       num(i.soldPrice), day(i.soldDate), i.soldPlatform ? platformName(i.soldPlatform) : soldListing ? listingName(soldListing) : '',
       active.length, [...new Set(ls.map(listingName))].join(', '), posted[0] || '',
+      day(i.marketCheck?.at), num(i.marketCheck?.typicalSold) || '',
       day(i.createdAt), day(i.updatedAt || i.createdAt),
     ].map(cell));
     for (const l of ls) {

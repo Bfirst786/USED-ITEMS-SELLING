@@ -1,9 +1,9 @@
 import * as db from './db.js';
-import { TIERS, CATEGORIES, CONDITIONS, tierFor, itemTier, itemPrice, suggestPrice, money, nicePrice, compLinks } from './pricing.js';
+import { TIERS, CATEGORIES, CONDITIONS, tierFor, itemTier, itemPrice, suggestPrice, money, nicePrice, compLinks, needsMarketCheck, parseComps } from './pricing.js';
 import { PLATFORMS, recommendPlatforms, platformName, matchPlatformKey, modeLabel } from './platforms.js';
 import { DEFAULT_RULES, ACTIONS, TRIGGERS, computeReminders, isDue, toICS, isoDay, daysBetween, toDate } from './reminders.js';
 import { generateTitle, generateDescription, titleCase, shorten, fixShouting, tidy, lint, limitsFor } from './writer.js';
-import { MODELS, analyzeItem, improveListing, callClaude } from './ai.js';
+import { MODELS, analyzeItem, improveListing, callClaude, marketCheck } from './ai.js';
 import { pushToSheet, scriptSource, newSecret, isWebAppUrl } from './sheets.js';
 
 // ---------- State ----------
@@ -372,7 +372,7 @@ function itemCard(i, due) {
     <div class="thumb">${i.photos[0] ? `<img data-photo="${i.photos[0]}" alt="">` : '📦'}</div>
     <div class="info">
       <div class="t">${h(i.title || 'Untitled item')}</div>
-      <div class="row">${tierBadge(i)} ${statusBadge(i)} ${due ? '<span class="badge due">⏰ Due</span>' : ''}</div>
+      <div class="row">${tierBadge(i)} ${statusBadge(i)} ${due ? '<span class="badge due">⏰ Due</span>' : ''} ${needsMarketCheck(i) ? '<span class="badge check">🔎 Check price</span>' : ''}</div>
       <div class="meta">${meta.join(' · ')}</div>
     </div>
     <div class="price">${money(i.askingPrice || i.suggested?.target)}</div>
@@ -529,10 +529,12 @@ function priceHTML(item) {
         ${s.rationale ? `<p class="small muted">${h(s.rationale)}</p>` : ''}
         <button class="btn small" data-act="use-suggested">Use these prices</button>
       </div>` : `<p class="muted small">Get a suggestion from your details (add original price and/or recent sold prices), or let Claude look at the photos.</p>`}
+    ${marketHTML(item)}
     ${item.aiQuestions?.length ? `<div class="note"><b>Claude would like to know:</b><ul>${item.aiQuestions.map((q) => `<li>${h(q)}</li>`).join('')}</ul><span class="small muted">Add answers to Details, then re-run the analysis.</span></div>` : ''}
     <div class="btn-row">
       <button class="btn" data-act="suggest-rules">🧮 Estimate price</button>
       <button class="btn primary" data-act="analyze">✨ Analyze with Claude</button>
+      <button class="btn ${needsMarketCheck(item) ? 'primary' : ''}" data-act="market-check">🔎 ${item.marketCheck ? 'Re-check' : 'Check'} market prices</button>
     </div>
     <label>Recent SOLD prices for similar items <small class="muted">(e.g. 120, 95, 140)</small><input data-field="comps" value="${h(item.comps)}" inputmode="decimal"></label>
     ${links.length ? `<div class="links">Look up comps: ${links.map((l) => `<a href="${l.url}" target="_blank" rel="noopener">${l.label}</a>`).join(' · ')}</div>` : ''}
@@ -541,6 +543,32 @@ function priceHTML(item) {
       <label>Lowest I'll take ($)<input data-price="floorPrice" type="number" inputmode="decimal" min="0" value="${h(item.floorPrice)}"></label>
     </div>
     ${item.priceHistory?.length ? `<details class="history"><summary>Price history (${item.priceHistory.length})</summary><ul>${item.priceHistory.slice().reverse().map((p) => `<li>${p.date}: ${money(p.price)}</li>`).join('')}</ul></details>` : ''}`;
+}
+
+function marketHTML(item) {
+  const m = item.marketCheck;
+  const nudge = needsMarketCheck(item)
+    ? `<div class="note"><b>🔎 Recommended for items over $100:</b> ${m ? 'your market check is over a month old — prices move, so re-check before dropping the price.' : 'before you list, let Claude search the web for comparable sold and for-sale listings.'}</div>`
+    : '';
+  if (!m) return nudge;
+  const range = (a, b) => (a && b ? `${money(a)}–${money(b)}` : a || b ? money(a || b) : '—');
+  const days = daysBetween(new Date(m.at), new Date());
+  return `${nudge}
+    <div class="suggest market">
+      <div class="suggest-top"><span class="muted">Market check · ${days ? `${days}d ago` : 'today'} · ${m.confidence} confidence</span></div>
+      <div class="suggest-row">
+        <span>Typically sells for <b>${money(m.typicalSold)}</b></span>
+        <span>Sold ${range(m.soldLow, m.soldHigh)}</span>
+        <span>Asking ${range(m.askingLow, m.askingHigh)}</span>
+      </div>
+      ${m.listPrice ? `<div class="suggest-row"><span>List at <b>${money(m.listPrice)}</b></span><span>Lowest to accept <b>${money(m.floor)}</b></span></div>` : ''}
+      ${m.summary ? `<p class="small">${h(m.summary)}</p>` : ''}
+      ${m.comparables.length ? `<details class="comps"><summary>${m.comparables.length} comparable listing${m.comparables.length > 1 ? 's' : ''}</summary><ul>
+        ${m.comparables.map((c) => `<li><span class="badge ${c.status === 'sold' ? 'status-sold' : ''}">${h(c.status)}</span> <b>${money(c.price)}</b> ${c.url ? `<a href="${h(c.url)}" target="_blank" rel="noopener">${h(c.title)}</a>` : h(c.title)}<span class="small muted">${[c.condition, c.source, c.date].filter(Boolean).map(h).join(' · ')}</span></li>`).join('')}
+      </ul></details>` : ''}
+      ${m.caveats.length || m.dropped ? `<ul class="small muted caveats">${m.caveats.map((c) => `<li>${h(c)}</li>`).join('')}${m.dropped ? `<li>${m.dropped} listing${m.dropped > 1 ? 's were' : ' was'} left out because the link couldn't be confirmed in the search results.</li>` : ''}</ul>` : ''}
+      ${m.listPrice ? `<button class="btn small" data-act="use-market">Use these prices</button>` : ''}
+    </div>`;
 }
 
 function whereHTML(item) {
@@ -721,6 +749,18 @@ function bindItem(v, item) {
       }
       case 'analyze':
         return runAnalyze(item);
+      case 'market-check':
+        return runMarketCheck(item);
+      case 'use-market': {
+        const m = item.marketCheck;
+        item.askingPrice = m.listPrice;
+        item.floorPrice = m.floor || item.floorPrice;
+        recordPrice(item, m.listPrice);
+        await saveItem(item);
+        refreshItemParts(item);
+        toast(`Asking ${money(m.listPrice)}${m.floor ? `, floor ${money(m.floor)}` : ''} — remember to update any live listings.`, 4000);
+        break;
+      }
       case 'use-suggested': {
         const s = item.suggested;
         item.askingPrice = s.listPrice;
@@ -826,6 +866,27 @@ async function copy(text) {
 }
 
 // ---------- AI actions ----------
+async function runMarketCheck(item) {
+  if (!S.settings.apiKey) return toast('Add your Claude API key in Settings first.', 4000);
+  if (!item.title && !item.brand && !item.photos.length) return toast('Add a name or photo first so Claude knows what to search for.');
+  const m = await busy('Claude is searching the web for comparable listings… (up to a minute)', async () => {
+    const images = item.brand && item.model ? [] : await photosForAI(item, 2);
+    return marketCheck(S.settings, item, images);
+  });
+  if (!m) return;
+  item.marketCheck = m;
+  // Feed sold prices into the comps field so the offline estimate benefits too.
+  const sold = m.comparables.filter((c) => c.status === 'sold' && c.url).map((c) => c.price);
+  if (sold.length) item.comps = [...new Set([...parseComps(item.comps), ...sold])].join(', ');
+  await saveItem(item);
+  if (location.hash === `#/item/${item.id}`) {
+    refreshItemParts(item);
+    const field = $('[data-field="comps"]');
+    if (field) field.value = item.comps || '';
+  }
+  toast(m.comparables.length ? `Found ${m.comparables.length} comparable listings.` : 'Claude couldn\'t find close comparables — see the notes.', 4000);
+}
+
 async function runAnalyze(item) {
   if (!S.settings.apiKey) {
     toast('Add your Claude API key in Settings first.', 4000);

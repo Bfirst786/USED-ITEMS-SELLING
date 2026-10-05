@@ -25,6 +25,14 @@ stays on your phone.
     item, brand and condition, estimates a price, recommends platforms, writes a
     description, and asks questions that would change the price. You can also let it
     search the web for comparable sold prices.
+- **Market price check** (Claude, optional): a *Check market prices* button has
+  Claude search the web for sold and for-sale listings of comparable items, then shows
+  the typical sold price, sold and asking ranges, a suggested list price and floor,
+  and the comparable listings with links. Links that didn't come from the actual
+  search results are thrown out, along with their listings. Items over $100 that
+  haven't been checked, or were checked over 30 days ago, get a *🔎 Check price*
+  badge and a reminder on their price section. Cheaper items can still use the
+  button. Each check uses a few web searches, billed with your Claude API usage.
 - **Where to sell**: ranks marketplaces (Facebook Marketplace, OfferUp, Craigslist,
   Nextdoor, eBay, Mercari, Poshmark, Depop, Grailed, Swappa, Reverb, Chrono24,
   The RealReal, Chairish, Kaiyo, Pinkbike, Decluttr, FB groups) by category, price

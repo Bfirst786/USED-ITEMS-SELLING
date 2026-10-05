@@ -232,3 +232,11 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
 ol.steps { padding-left: 20px; margin: 8px 0; }
 ol.steps li { margin: 6px 0; }
 code { font-size: .85em; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+
+.badge.check { background: var(--t3-soft); color: var(--t3); border-color: transparent; }
+.suggest.market { border-color: var(--t3); }
+.comps ul { list-style: none; padding: 0; margin: 8px 0 0; }
+.comps li { padding: 8px 0; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.comps li .small { width: 100%; }
+.comps a { word-break: break-word; }
+.caveats { margin: 8px 0 0; padding-left: 18px; }

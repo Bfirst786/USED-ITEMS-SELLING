@@ -54,25 +54,39 @@ async function post(settings, body) {
     if (res.status === 401) throw new AIError('Your Claude API key was rejected. Check it in Settings.');
     if (res.status === 429) throw new AIError('Rate limited by the Claude API — wait a minute and try again.');
     if (res.status === 529 || res.status >= 500) throw new AIError('Claude is busy right now — try again shortly.');
+    if (/web.?search/i.test(msg)) throw new AIError('Web search isn\'t available for your Claude API account. An admin can turn it on in the Claude Console settings.');
     throw new AIError(`Claude API error (${res.status}): ${msg}`);
   }
   return data;
 }
 
 export async function callClaude(settings, opts) {
+  const data = await callClaudeRaw(settings, opts);
+  const text = responseText(data);
+  if (!opts.schema) return text;
+  return parseJSON(text);
+}
+
+function responseText(data) {
+  return (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+}
+
+async function callClaudeRaw(settings, opts) {
   if (!settings.apiKey) throw new AIError('Add your Claude API key in Settings to use AI features.');
   const body = buildBody(settings, opts);
+  const content = [];
   let data = await post(settings, body);
+  content.push(...(data.content || []));
   // Server-side web search can pause a long turn; continue it a few times.
   for (let i = 0; i < 3 && data.stop_reason === 'pause_turn'; i++) {
     body.messages = [body.messages[0], { role: 'assistant', content: data.content }];
     data = await post(settings, body);
+    content.push(...(data.content || []));
   }
   if (data.stop_reason === 'refusal') throw new AIError('Claude declined this request.');
   if (data.stop_reason === 'max_tokens') throw new AIError('The response was cut off — try again.');
-  const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
-  if (!opts.schema) return text;
-  return parseJSON(text);
+  // Keep every block across continuations (search results arrive before the final text).
+  return { ...data, allContent: content };
 }
 
 export function parseJSON(text) {
@@ -184,4 +198,93 @@ export function itemFacts(item) {
     ['Asking price', item.askingPrice && `$${item.askingPrice}`],
   ];
   return f.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join('\n');
+}
+
+// ---------- Market check (web search for comparable listings) ----------
+
+
+export async function marketCheck(settings, item, images = []) {
+  const content = [
+    ...images.map((data) => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } })),
+    {
+      type: 'text',
+      text:
+        `Research the current US resale market for this item. Search the web for SOLD listings (eBay sold/completed listings, marketplace sold prices) and current FOR-SALE listings of the same or closely comparable items (same brand/model, similar condition).\n` +
+        `Sold prices matter most; asking prices only show the ceiling. Note condition, completeness and any differences from the seller's item.\n` +
+        `Only list comparables you actually found in your search results, with their real URLs. Never invent listings, prices or URLs; leave url empty if you have none.\n\n` +
+        `Item facts:\n${itemFacts(item) || '(see photos)'}\n\n` +
+        `Finish with a single JSON object in a \`\`\`json block with these keys:\n` +
+        `comparables: array of up to 8 {title, price (number), status ("sold" | "for sale" | "retail new"), condition, source (site name), url, date (if shown, else "")};\n` +
+        `sold_low, sold_high, typical_sold, asking_low, asking_high, suggested_list_price, suggested_floor (numbers in USD; 0 if unknown);\n` +
+        `confidence ("low" | "medium" | "high"); summary (2-3 plain sentences for the seller); caveats (array of short strings).`,
+    },
+  ];
+  const data = await callClaudeRaw(settings, { system: SELLER_SYSTEM, content, webSearch: true });
+  const parsed = parseJSON(responseText(data));
+  return normalizeMarket(parsed, searchResultUrls(data.allContent));
+}
+
+// Every URL the web search tool actually returned.
+export function searchResultUrls(blocks = []) {
+  const urls = new Set();
+  for (const b of blocks) {
+    if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) {
+      for (const r of b.content) if (r.url) urls.add(normalizeUrl(r.url));
+    }
+    if (b.type === 'text' && Array.isArray(b.citations)) {
+      for (const c of b.citations) if (c.url) urls.add(normalizeUrl(c.url));
+    }
+  }
+  return urls;
+}
+
+function normalizeUrl(u) {
+  try {
+    const x = new URL(u);
+    return (x.host.replace(/^www\./, '') + x.pathname.replace(/\/$/, '')).toLowerCase();
+  } catch {
+    return String(u).toLowerCase();
+  }
+}
+
+const n = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.round(Number(v) * 100) / 100 : 0);
+
+// Clean up Claude's JSON and drop links that didn't come from the search results.
+export function normalizeMarket(raw, foundUrls = new Set()) {
+  let dropped = 0;
+  const comps = (Array.isArray(raw?.comparables) ? raw.comparables : [])
+    .map((c) => {
+      const url = String(c.url || '').trim();
+      const verified = !!url && /^https?:\/\//.test(url) && foundUrls.has(normalizeUrl(url));
+      // A link that never appeared in the search results is likely made up — drop the whole listing.
+      if (url && !verified) {
+        dropped++;
+        return null;
+      }
+      return {
+        title: String(c.title || '').slice(0, 160),
+        price: n(c.price),
+        status: ['sold', 'for sale', 'retail new'].includes(c.status) ? c.status : 'for sale',
+        condition: String(c.condition || '').slice(0, 60),
+        source: String(c.source || '').slice(0, 40),
+        url: verified ? url : '',
+        date: String(c.date || '').slice(0, 20),
+      };
+    })
+    .filter((c) => c && c.title && c.price);
+  return {
+    at: new Date().toISOString(),
+    comparables: comps.slice(0, 8),
+    dropped,
+    soldLow: n(raw?.sold_low),
+    soldHigh: n(raw?.sold_high),
+    typicalSold: n(raw?.typical_sold),
+    askingLow: n(raw?.asking_low),
+    askingHigh: n(raw?.asking_high),
+    listPrice: n(raw?.suggested_list_price),
+    floor: n(raw?.suggested_floor),
+    confidence: ['low', 'medium', 'high'].includes(raw?.confidence) ? raw.confidence : 'low',
+    summary: String(raw?.summary || ''),
+    caveats: (Array.isArray(raw?.caveats) ? raw.caveats : []).map(String).slice(0, 5),
+  };
 }

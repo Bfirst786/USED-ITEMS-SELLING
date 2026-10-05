@@ -162,3 +162,14 @@ export function compLinks(item) {
     { label: 'Google Shopping (retail)', url: `https://www.google.com/search?tbm=shop&q=${q}` },
   ];
 }
+
+// Items over $100 (or that cost over $100 new, before they have a price) deserve a
+// web check of comparable listings; a check older than 30 days counts as stale.
+export function needsMarketCheck(item, now = new Date()) {
+  if (item.status === 'sold' || item.status === 'archived') return false;
+  const tier = itemTier(item);
+  const valuable = tier ? tier >= 2 : Number(item.originalPrice) > 100;
+  if (!valuable) return false;
+  if (!item.marketCheck || !item.marketCheck.at) return true;
+  return now - new Date(item.marketCheck.at) > 30 * 86400000;
+}
