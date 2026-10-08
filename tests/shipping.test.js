@@ -50,3 +50,48 @@ test('advice: what to charge, and when shipping is not worth it', () => {
   const cheap = shippingAdvice(estimateShipping({ lb: 15, l: 20, w: 16, h: 12 }), 20);
   assert.equal(cheap.worthShipping, false);
 });
+
+import { shippingFromEstimate, PACKING_SCHEMA } from '../js/shipping.js';
+
+const est = (o) => ({
+  identified_as: 'KitchenAid Artisan stand mixer', item_length_in: 14, item_width_in: 8.7, item_height_in: 14, item_weight_lb: 22,
+  box_length_in: 18, box_width_in: 18, box_height_in: 16, packed_weight_lb: 25.4, fragile: false, ship_recommended: true,
+  confidence: 'high', packing_tips: ['Remove the bowl and wrap it separately'], reasoning: 'Published specs.', ...o,
+});
+
+test('Claude estimate becomes shipping fields, matching a box preset', () => {
+  const s = shippingFromEstimate(est());
+  assert.equal(s.box, 'large');
+  assert.deepEqual([s.l, s.w, s.h], [18, 18, 16]);
+  assert.equal(s.lb, 25);
+  assert.equal(s.oz, 7); // 0.4 lb = 6.4 oz → rounded up
+  assert.equal(s.estimated, true);
+  assert.equal(s.ai.confidence, 'high');
+  assert.equal(s.ai.tips.length, 1);
+  assert.ok(estimateShipping(s).ok, 'feeds straight into the rate estimate');
+});
+
+test('box is never smaller than the item, and odd sizes stay custom', () => {
+  const s = shippingFromEstimate(est({ box_length_in: 10, box_width_in: 9.2, box_height_in: 4, item_length_in: 12, item_width_in: 6, item_height_in: 5 }));
+  assert.deepEqual([s.l, s.w, s.h], [12, 10, 5]);
+  assert.equal(s.box, 'custom');
+});
+
+test('ounces roll over to the next pound; missing weights fall back sensibly', () => {
+  const s = shippingFromEstimate(est({ packed_weight_lb: 2.99, item_weight_lb: 2 }));
+  assert.equal(s.lb, 3);
+  assert.equal(s.oz, 0);
+  const noPacked = shippingFromEstimate(est({ packed_weight_lb: 0, item_weight_lb: 1.5 }));
+  assert.equal(noPacked.lb, 1);
+  assert.equal(noPacked.oz, 8);
+  assert.equal(shippingFromEstimate(est({ packed_weight_lb: 0, item_weight_lb: 0 })), null);
+});
+
+test('bad confidence values fall back to low; schema requires every field', () => {
+  assert.equal(shippingFromEstimate(est({ confidence: 'sure' })).ai.confidence, 'low');
+  assert.equal(PACKING_SCHEMA.required.length, Object.keys(PACKING_SCHEMA.properties).length);
+});
+
+test('packed weight is never less than the item itself', () => {
+  assert.equal(shippingFromEstimate(est({ packed_weight_lb: 3, item_weight_lb: 22 })).lb, 22);
+});

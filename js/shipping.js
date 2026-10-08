@@ -123,3 +123,67 @@ export function shippingAdvice(est, price) {
     share,
   };
 }
+
+// ---------- Claude estimate of box size and packed weight ----------
+
+export const PACKING_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['identified_as', 'item_length_in', 'item_width_in', 'item_height_in', 'item_weight_lb', 'box_length_in', 'box_width_in', 'box_height_in', 'packed_weight_lb', 'fragile', 'ship_recommended', 'confidence', 'packing_tips', 'reasoning'],
+  properties: {
+    identified_as: { type: 'string' },
+    item_length_in: { type: 'number' },
+    item_width_in: { type: 'number' },
+    item_height_in: { type: 'number' },
+    item_weight_lb: { type: 'number' },
+    box_length_in: { type: 'number' },
+    box_width_in: { type: 'number' },
+    box_height_in: { type: 'number' },
+    packed_weight_lb: { type: 'number' },
+    fragile: { type: 'boolean' },
+    ship_recommended: { type: 'boolean' },
+    confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
+    packing_tips: { type: 'array', items: { type: 'string' } },
+    reasoning: { type: 'string' },
+  },
+};
+
+const pos = (n) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : 0);
+
+// Turn Claude's estimate into shipping fields: whole-inch box (longest side first),
+// a matching preset when the box is one of ours, and packed weight as lb + oz.
+export function shippingFromEstimate(r) {
+  const box = [r.box_length_in, r.box_width_in, r.box_height_in].map((d) => Math.ceil(pos(d))).sort((a, b) => b - a);
+  const itemDims = [r.item_length_in, r.item_width_in, r.item_height_in].map(pos);
+  // The box must be at least as big as the item in every direction.
+  const sortedItem = [...itemDims].sort((a, b) => b - a);
+  for (let i = 0; i < 3; i++) if (box[i] < Math.ceil(sortedItem[i])) box[i] = Math.ceil(sortedItem[i]);
+  let packed = Math.max(pos(r.packed_weight_lb), pos(r.item_weight_lb));
+  if (!packed) return null;
+  let lb = Math.floor(packed);
+  let oz = Math.ceil((packed - lb) * 16);
+  if (oz >= 16) {
+    lb += 1;
+    oz = 0;
+  }
+  const preset = Object.entries(BOXES).find(([k, b]) => k !== 'custom' && [b.l, b.w, b.h].sort((x, y) => y - x).join('x') === box.join('x'));
+  return {
+    box: preset ? preset[0] : 'custom',
+    l: box[0] || '',
+    w: box[1] || '',
+    h: box[2] || '',
+    lb,
+    oz,
+    estimated: true,
+    ai: {
+      at: new Date().toISOString(),
+      identifiedAs: String(r.identified_as || ''),
+      item: { l: itemDims[0], w: itemDims[1], h: itemDims[2], weight: pos(r.item_weight_lb) },
+      fragile: !!r.fragile,
+      shipRecommended: r.ship_recommended !== false,
+      confidence: ['low', 'medium', 'high'].includes(r.confidence) ? r.confidence : 'low',
+      tips: (Array.isArray(r.packing_tips) ? r.packing_tips : []).map(String).slice(0, 5),
+      reasoning: String(r.reasoning || ''),
+    },
+  };
+}

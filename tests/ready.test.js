@@ -69,3 +69,9 @@ test('clothing gets apparel condition names; Claude suggestions take priority', 
 test('unknown marketplace gives an empty sheet', () => {
   assert.deepEqual(readySheet(lamp, 'nowhere'), []);
 });
+
+test('estimated package weight is flagged on the eBay sheet', () => {
+  const f = readySheet({ ...lamp, shipping: { ...lamp.shipping, estimated: true } }, 'ebay');
+  assert.match(field(f, 'package').warn, /Estimated by Claude/);
+  assert.equal(field(readySheet(lamp, 'ebay'), 'package').warn, '');
+});

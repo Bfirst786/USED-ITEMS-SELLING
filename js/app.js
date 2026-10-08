@@ -3,13 +3,13 @@ import { TIERS, CATEGORIES, CONDITIONS, tierFor, itemTier, itemPrice, suggestPri
 import { PLATFORMS, recommendPlatforms, platformName, matchPlatformKey, modeLabel } from './platforms.js';
 import { DEFAULT_RULES, ACTIONS, TRIGGERS, computeReminders, isDue, toICS, isoDay, daysBetween, toDate } from './reminders.js';
 import { generateTitle, generateDescription, titleCase, shorten, fixShouting, tidy, lint, limitsFor } from './writer.js';
-import { MODELS, analyzeItem, improveListing, callClaude, marketCheck, ebayAssist } from './ai.js';
+import { MODELS, analyzeItem, improveListing, callClaude, marketCheck, ebayAssist, packingEstimate } from './ai.js';
 import { READY_PROFILES, readySheet, readyProblems, EBAY_ASSIST_SCHEMA } from './ready.js';
-import { BOXES, CALCULATORS, estimateShipping, shippingAdvice } from './shipping.js';
+import { BOXES, CALCULATORS, estimateShipping, shippingAdvice, PACKING_SCHEMA, shippingFromEstimate } from './shipping.js';
 import { pushToSheet, scriptSource, newSecret, testSheet, urlProblem, backupToDrive, listDriveBackups, fetchDriveBackup, fetchDrivePhoto, SCRIPT_VERSION } from './sheets.js';
 
 // Shown in Settings so it's easy to tell which version a phone is running.
-export const APP_VERSION = '2026.10.08-ready';
+export const APP_VERSION = '2026.10.08-packing';
 
 // ---------- State ----------
 const DEFAULT_SETTINGS = {
@@ -881,12 +881,49 @@ function shippingHTML(item) {
   const num = (k, label, attrs = '') => `<label>${label}<input data-ship="${k}" type="number" inputmode="decimal" min="0" value="${h(sh[k])}" ${attrs}></label>`;
   return `
     ${item.bulky ? '<div class="note">This item is marked bulky — local pickup is usually the better deal. You can still estimate shipping below.</div>' : ''}
-    <p class="small muted">Only needed if you'll ship it. Weigh it packed (item + box + padding), or add the box weight shown.</p>
+    <p class="small muted">Only needed if you'll ship it. Weigh it packed (item + box + padding), or let Claude estimate from your photos and details.</p>
+    <div class="btn-row"><button class="btn primary" data-act="pack-estimate">✨ Estimate box &amp; weight</button></div>
+    <div id="pack-ai">${packingNoteHTML(item)}</div>
     <label>Box<select data-ship="box">${Object.entries(BOXES).map(([k, b]) => `<option value="${k}" ${k === (sh.box || 'custom') ? 'selected' : ''}>${h(b.label)}</option>`).join('')}</select></label>
     <div class="grid3">${num('l', 'Length (in)')}${num('w', 'Width (in)')}${num('h', 'Height (in)')}</div>
     <div class="grid2">${num('lb', 'Weight (lb)', 'step="1"')}${num('oz', 'Ounces', 'step="1" max="15"')}</div>
     <div id="ship-results">${shippingResultsHTML(item)}</div>
     <div class="links small">Exact prices: ${CALCULATORS.map((c) => `<a href="${c.url}" target="_blank" rel="noopener">${c.label}</a>`).join(' · ')}</div>`;
+}
+
+function packingNoteHTML(item) {
+  const a = item.shipping?.ai;
+  if (!a) return '';
+  const it = a.item;
+  return `<div class="note small">
+    <b>${item.shipping.estimated ? '✨ Claude\'s estimate' : '✨ Based on Claude\'s estimate (you\'ve adjusted it)'}</b> · ${h(a.confidence)} confidence${a.identifiedAs ? ` · ${h(a.identifiedAs)}` : ''}<br>
+    ${it.l ? `Item about ${[it.l, it.w, it.h].map((n) => Math.round(n * 10) / 10).join(' × ')} in, ${Math.round(it.weight * 10) / 10} lb. ` : ''}${a.fragile ? '<b>Fragile.</b> ' : ''}${h(a.reasoning)}
+    ${a.tips.length ? `<ul>${a.tips.map((t) => `<li>${h(t)}</li>`).join('')}</ul>` : ''}
+    ${a.shipRecommended ? '' : '<div><b>Claude suggests local pickup</b> — this one is awkward or costly to ship.</div>'}
+    ${item.shipping.estimated ? '<div>⚖️ <b>Estimated, not measured</b> — weigh and measure the packed box before you buy a label.</div>' : ''}
+  </div>`;
+}
+
+async function runPackingEstimate(item) {
+  if (!S.settings.apiKey) return toast('Add your Claude API key in Settings first.', 4000);
+  if (!item.photos.length && !item.title) return toast('Add a photo or a name first.');
+  const sh = item.shipping || {};
+  if ((sh.lb || sh.oz || sh.l) && !sh.estimated && !confirm('Replace the box size and weight you entered with Claude\'s estimate?')) return;
+  const r = await busy('Claude is sizing up the item…', async () => {
+    const images = await photosForAI(item, 3);
+    return packingEstimate(S.settings, item, images, PACKING_SCHEMA);
+  });
+  if (!r) return;
+  const fields = shippingFromEstimate(r);
+  if (!fields) return toast('Claude couldn\'t estimate a weight for this one — try adding more detail or a photo.', 5000);
+  item.shipping = { ...sh, ...fields };
+  for (const k of ['box', 'l', 'w', 'h', 'lb', 'oz']) {
+    const el = $(`[data-ship="${k}"]`);
+    if (el) el.value = item.shipping[k];
+  }
+  $('#pack-ai').innerHTML = packingNoteHTML(item);
+  updateShipping(item);
+  toast('Box and weight estimated — check them before buying a label.', 4000);
 }
 
 function shippingResultsHTML(item) {
@@ -1110,6 +1147,8 @@ function bindItem(v, item) {
         return runAnalyze(item);
       case 'market-check':
         return runMarketCheck(item);
+      case 'pack-estimate':
+        return runPackingEstimate(item);
       case 'use-market': {
         const m = item.marketCheck;
         item.askingPrice = m.listPrice;
@@ -1212,7 +1251,14 @@ function bindItem(v, item) {
 
 function updateShipping(item, key, value) {
   item.shipping = { ...(item.shipping || {}) };
-  if (key) item.shipping[key] = value === '' ? '' : Number(value);
+  if (key) {
+    item.shipping[key] = value === '' ? '' : Number(value);
+    if (item.shipping.estimated) {
+      item.shipping.estimated = false;
+      const note = $('#pack-ai');
+      if (note) note.innerHTML = packingNoteHTML(item);
+    }
+  }
   const est = estimateShipping(item.shipping);
   item.shipping.estimate = est.ok ? { typical: est.typical, low: est.low, high: est.high, carrier: est.options.find((o) => o.key === est.best).name } : null;
   $('#ship-results').innerHTML = shippingResultsHTML(item);

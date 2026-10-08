@@ -308,3 +308,24 @@ export async function ebayAssist(settings, item, images = [], schema) {
   ];
   return callClaude(settings, { system: SELLER_SYSTEM, content, schema });
 }
+
+// ---------- Shipping: estimate box size and packed weight from photos + details ----------
+
+export async function packingEstimate(settings, item, images = [], schema) {
+  const content = [
+    ...images.map((data) => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } })),
+    {
+      type: 'text',
+      text:
+        `Estimate how this item would be packed and shipped by a private US seller.\n` +
+        `1. Identify the item. If you recognise the exact product/model, use its published dimensions and weight; otherwise estimate from the photos (use visible references like outlets, door frames, hands, furniture for scale) and typical sizes for this kind of item.\n` +
+        `2. item dimensions (inches, longest first) and item weight (lb). Use any dimensions the seller gave.\n` +
+        `3. A shipping box: item size plus about 2 inches of padding on every side (3 inches if fragile), rounded up to a common stock box size.\n` +
+        `4. packed_weight_lb: item + box + packing material (a box adds roughly 0.5-3 lb depending on size).\n` +
+        `5. ship_recommended: false if it is too large, heavy or fragile to ship sensibly compared with local pickup.\n` +
+        `6. Up to 4 short packing tips specific to this item. reasoning: one or two sentences on how you got the numbers.\n` +
+        `Be honest about uncertainty through confidence.\n\nItem facts:\n${itemFacts(item) || '(see photos)'}`,
+    },
+  ];
+  return callClaude(settings, { system: SELLER_SYSTEM, content, schema });
+}

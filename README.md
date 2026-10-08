@@ -48,8 +48,11 @@ stays on your phone.
 - **Listing tracker**: for each platform, store the listing URL, posting date, price
   and status (active / ended / sold). Mark a listing "renewed" when you bump it.
   Delete a listing from tracking with its 🗑 button.
-- **Shipping estimate** (optional, per item): pick a box preset or enter dimensions and
-  packed weight to get a rough USPS Ground Advantage / UPS Ground price range. It
+- **Shipping estimate** (optional, per item): tap **✨ Estimate box & weight** to have
+  Claude size the item from your photos and details (using published specs when it
+  recognises the model), pick a padded box and estimate the packed weight, with
+  packing tips. Estimates are marked until you weigh or measure. Or pick a box preset
+  and enter dimensions and packed weight yourself to get a rough USPS Ground Advantage / UPS Ground price range. It
   accounts for dimensional weight and flags oversize or overweight boxes, then suggests
   what to charge the buyer or the price to list at with free shipping. Links to the
   carriers' calculators are included for exact prices.
