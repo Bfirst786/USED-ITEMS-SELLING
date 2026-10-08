@@ -249,3 +249,17 @@ code { font-size: .85em; background: var(--bg); padding: 1px 4px; border-radius:
 
 .center { text-align: center; }
 #sync-code { word-break: break-all; }
+
+.ready-step { margin: 18px 0 6px; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.ready-step:first-child { margin-top: 0; }
+.ready-field { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.ready-field.done { border-color: var(--ok); background: var(--ok-soft); }
+.ready-value { margin: 6px 0; padding: 8px 10px; background: var(--bg); border-radius: 8px; font-size: .95rem; word-break: break-word; }
+.ready-value.multi { white-space: pre-wrap; max-height: 220px; overflow: auto; }
+.ready-field.done .ready-value { background: var(--card); }
+.tick { border: 0; background: none; font-size: 1.3rem; color: var(--ok); cursor: pointer; min-width: 36px; min-height: 36px; }
+.warn-text { color: var(--t2); margin: 4px 0; }
+.progress { height: 8px; background: var(--bg); border-radius: 999px; overflow: hidden; margin-top: 12px; }
+.progress div { height: 100%; background: var(--ok); }
+.ready .row.between { flex-wrap: nowrap; }
+.ready .row.between b { flex: 1; }

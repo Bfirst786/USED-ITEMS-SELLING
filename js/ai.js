@@ -288,3 +288,23 @@ export function normalizeMarket(raw, foundUrls = new Set()) {
     caveats: (Array.isArray(raw?.caveats) ? raw.caveats : []).map(String).slice(0, 5),
   };
 }
+
+// ---------- Marketplace assist (category, condition, item specifics) ----------
+
+export async function ebayAssist(settings, item, images = [], schema) {
+  const content = [
+    ...images.map((data) => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } })),
+    {
+      type: 'text',
+      text:
+        `The seller is listing this item on eBay (US). Give:\n` +
+        `1. category: the best eBay category as a breadcrumb path (e.g. "Home & Garden > Lamps, Lighting & Ceiling Fans > Lamps").\n` +
+        `2. condition: the eBay condition name to pick for that category.\n` +
+        `3. itemSpecifics: the item specifics eBay asks for in that category (Brand, Type, Model, MPN, Color, Material, Size, Style, etc.), most important first, max 15.\n` +
+        `Only fill values supported by the photos or item facts. Do not guess serial numbers, MPNs or measurements. ` +
+        `Leave out specifics you can't determine, and list the important missing ones in notes (one short sentence each) so the seller can check them.\n\n` +
+        `Item facts:\n${itemFacts(item) || '(see photos)'}`,
+    },
+  ];
+  return callClaude(settings, { system: SELLER_SYSTEM, content, schema });
+}

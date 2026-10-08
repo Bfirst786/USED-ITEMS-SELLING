@@ -3,12 +3,13 @@ import { TIERS, CATEGORIES, CONDITIONS, tierFor, itemTier, itemPrice, suggestPri
 import { PLATFORMS, recommendPlatforms, platformName, matchPlatformKey, modeLabel } from './platforms.js';
 import { DEFAULT_RULES, ACTIONS, TRIGGERS, computeReminders, isDue, toICS, isoDay, daysBetween, toDate } from './reminders.js';
 import { generateTitle, generateDescription, titleCase, shorten, fixShouting, tidy, lint, limitsFor } from './writer.js';
-import { MODELS, analyzeItem, improveListing, callClaude, marketCheck } from './ai.js';
+import { MODELS, analyzeItem, improveListing, callClaude, marketCheck, ebayAssist } from './ai.js';
+import { READY_PROFILES, readySheet, readyProblems, EBAY_ASSIST_SCHEMA } from './ready.js';
 import { BOXES, CALCULATORS, estimateShipping, shippingAdvice } from './shipping.js';
 import { pushToSheet, scriptSource, newSecret, testSheet, urlProblem, backupToDrive, listDriveBackups, fetchDriveBackup, fetchDrivePhoto, SCRIPT_VERSION } from './sheets.js';
 
 // Shown in Settings so it's easy to tell which version a phone is running.
-export const APP_VERSION = '2026.10.05-backups';
+export const APP_VERSION = '2026.10.08-ready';
 
 // ---------- State ----------
 const DEFAULT_SETTINGS = {
@@ -408,6 +409,7 @@ function reminders() {
 const routes = [
   [/^#?\/?$/, () => viewList()],
   [/^#\/new$/, () => viewNew()],
+  [/^#\/item\/([\w-]+)\/ready\/(\w+)$/, (m) => viewReady(m[1], m[2])],
   [/^#\/item\/([\w-]+)$/, (m) => viewItem(m[1])],
   [/^#\/reminders$/, () => viewReminders()],
   [/^#\/settings$/, () => viewSettings()],
@@ -733,6 +735,147 @@ function marketHTML(item) {
     </div>`;
 }
 
+// ---------- Ready for <marketplace> ----------
+function viewReady(id, platform) {
+  const item = findItem(id);
+  const profile = READY_PROFILES[platform];
+  if (!item || !profile) {
+    setView('Not found', `<p class="empty">Nothing to show. <a href="#/">Back to items</a></p>`, { back: '#/' });
+    return;
+  }
+  const state = (item.ready = item.ready || {})[platform] || (item.ready[platform] = { done: {} });
+  const fields = readySheet(item, platform, S.settings);
+  const problems = readyProblems(fields);
+  const doneCount = fields.filter((f) => state.done[f.key]).length;
+  const listed = (item.listings || []).find((l) => l.platform === platform && l.status === 'active');
+  let lastStep = '';
+  const rows = fields.map((f) => {
+    const stepHead = f.step !== lastStep ? `<h3 class="ready-step">${h(f.step)}</h3>` : '';
+    lastStep = f.step;
+    const shown = f.display || f.value;
+    const canCopy = f.copy !== false && f.value;
+    return `${stepHead}<div class="ready-field ${state.done[f.key] ? 'done' : ''}" data-key="${f.key}">
+      <div class="row between"><b>${h(f.label)}</b>${f.limit ? `<span class="count ${f.value.length > f.limit ? 'over' : ''}">${f.value.length}/${f.limit}</span>` : ''}<button class="tick" data-tick="${f.key}" aria-label="Mark done">${state.done[f.key] ? '✓' : '○'}</button></div>
+      ${shown ? `<div class="ready-value ${f.multiline ? 'multi' : ''}">${h(shown)}</div>` : '<div class="ready-value muted">—</div>'}
+      ${f.warn ? `<div class="small warn-text">⚠️ ${h(f.warn)}</div>` : ''}
+      ${f.hint ? `<div class="small muted">${h(f.hint)}</div>` : ''}
+      <div class="btn-row tight">
+        ${canCopy ? `<button class="btn small primary" data-copy="${f.key}">Copy</button>` : ''}
+        ${f.list && f.list.length > 1 ? f.list.map((s, i) => `<button class="btn small" data-copy-spec="${i}">${h(s.name)}</button>`).join('') : ''}
+        ${f.action === 'save-photos' && item.photos.length ? `<button class="btn small primary" data-act="save-photos">💾 Save photos</button>` : ''}
+      </div>
+    </div>`;
+  });
+  const html = `
+    <div class="card">
+      <h2>${profile.icon} Ready for ${h(profile.name)}</h2>
+      <p class="small">${h(item.title || 'Untitled item')} · ${money(item.askingPrice)}</p>
+      <p class="small muted">${h(profile.intro)}</p>
+      ${problems.length ? `<div class="note"><b>Before you post:</b><ul>${problems.map((p) => `<li>${h(p.warn)}</li>`).join('')}</ul><a href="#/item/${item.id}">Back to the item</a></div>` : ''}
+      <div class="btn-row">
+        <a class="btn primary" href="${profile.sellUrl}" target="_blank" rel="noopener">Open ${h(profile.name)} ↗</a>
+        ${profile.canAssist ? `<button class="btn" data-act="assist">✨ Fill category &amp; specifics with Claude</button>` : ''}
+      </div>
+      ${state.ai?.notes ? `<div class="note small"><b>Claude's notes:</b> ${h(state.ai.notes)}</div>` : ''}
+      <div class="progress"><div style="width:${Math.round((doneCount / fields.length) * 100)}%"></div></div>
+      <p class="small muted">${doneCount} of ${fields.length} done</p>
+    </div>
+    <div class="card ready">${rows.join('')}</div>
+    <div class="card">
+      <h2>Posted it?</h2>
+      ${listed ? `<p class="small">Tracking your ${h(profile.name)} listing: <a href="${h(listed.url)}" target="_blank" rel="noopener">${h(listed.url || 'no link')}</a></p>` : `
+      <p class="small muted">Paste the listing link (eBay: Share → Copy link) so the app can track it and send reminders.</p>
+      <label>Listing link<input id="ready-url" type="url" inputmode="url" placeholder="https://www.ebay.com/itm/…"></label>
+      <div class="btn-row"><button class="btn primary" data-act="ready-done">✅ Save listing</button></div>`}
+      ${doneCount ? '<div class="btn-row"><button class="btn small" data-act="ready-reset">Clear check marks</button></div>' : ''}
+    </div>`;
+  const v = setView(`Ready for ${profile.name}`, html, { back: `#/item/${item.id}` });
+  const byKey = Object.fromEntries(fields.map((f) => [f.key, f]));
+  const markDone = async (key, on = true) => {
+    state.done[key] = on;
+    await saveItem(item);
+  };
+  v.onclick = async (e) => {
+    const t = e.target.closest('button');
+    if (!t) return;
+    if (t.dataset.copy) {
+      await copy(byKey[t.dataset.copy].value);
+      await markDone(t.dataset.copy);
+      return viewReadyKeepScroll(item.id, platform);
+    }
+    if (t.dataset.copySpec !== undefined) {
+      const s = byKey.specifics.list[Number(t.dataset.copySpec)];
+      return copy(s.value);
+    }
+    if (t.dataset.tick) {
+      await markDone(t.dataset.tick, !state.done[t.dataset.tick]);
+      return viewReadyKeepScroll(item.id, platform);
+    }
+    switch (t.dataset.act) {
+      case 'save-photos':
+        await savePhotos(item);
+        await markDone('photos');
+        return viewReadyKeepScroll(item.id, platform);
+      case 'assist':
+        return runReadyAssist(item, platform);
+      case 'ready-reset':
+        state.done = {};
+        await saveItem(item);
+        return viewReady(item.id, platform);
+      case 'ready-done': {
+        const url = $('#ready-url').value.trim();
+        if (url && !/^https?:\/\//.test(url)) return toast('That doesn\'t look like a link.');
+        item.listings.push({ id: db.uid(), platform, url, postedDate: today(), price: item.askingPrice || '', status: 'active' });
+        if (item.status === 'draft') item.status = 'listed';
+        await saveItem(item);
+        updateNav();
+        toast(`${profile.name} listing saved — reminders are on.`, 4000);
+        location.hash = `#/item/${item.id}`;
+        return;
+      }
+    }
+  };
+}
+
+function viewReadyKeepScroll(id, platform) {
+  const y = window.scrollY;
+  viewReady(id, platform);
+  window.scrollTo(0, y);
+}
+
+// Save all of an item's photos to the phone (share sheet → "Save Images"), or download them.
+async function savePhotos(item) {
+  const files = [];
+  for (const [i, id] of item.photos.entries()) {
+    const row = await db.get('photos', id);
+    if (row) files.push(new File([row.blob], `${(item.title || 'item').replace(/[^\w-]+/g, '-').slice(0, 40)}-${i + 1}.jpg`, { type: 'image/jpeg' }));
+  }
+  if (!files.length) return toast('No photos to save.');
+  if (navigator.canShare && navigator.canShare({ files })) {
+    try {
+      await navigator.share({ files });
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+    }
+  }
+  for (const f of files) download(f, f.name);
+  toast(`Downloading ${files.length} photo${files.length > 1 ? 's' : ''}…`);
+}
+
+async function runReadyAssist(item, platform) {
+  if (!S.settings.apiKey) return toast('Add your Claude API key in Settings first.', 4000);
+  const r = await busy('Claude is picking the category and item specifics…', async () => {
+    const images = await photosForAI(item, 3);
+    return ebayAssist(S.settings, item, images, EBAY_ASSIST_SCHEMA);
+  });
+  if (!r) return;
+  item.ready[platform].ai = r;
+  await saveItem(item);
+  viewReady(item.id, platform);
+  toast('Category and item specifics filled in — check them against the item.', 4000);
+}
+
 function shippingHTML(item) {
   const sh = item.shipping || {};
   const num = (k, label, attrs = '') => `<label>${label}<input data-ship="${k}" type="number" inputmode="decimal" min="0" value="${h(sh[k])}" ${attrs}></label>`;
@@ -784,7 +927,7 @@ function whereHTML(item) {
         <div><b>${h(r.name)}</b> <span class="badge">${modeLabel(r.mode)}</span>${listed.has(r.key) ? ' <span class="badge status-listed">Listed</span>' : ''}${ai.includes(r.key) ? ' <span class="badge ai">✨</span>' : ''}</div>
         <div class="small">${h(r.reasons.join(' · ') || 'Decent fit')}</div>
         <div class="small muted">Fees: ${h(r.fees)}</div>
-        <div class="btn-row"><a class="btn small" href="${r.sellUrl}" target="_blank" rel="noopener">Open ${h(r.name.split(' (')[0])} ↗</a><button class="btn small primary" data-act="add-listing" data-platform="${r.key}">+ Track listing</button></div>
+        <div class="btn-row">${READY_PROFILES[r.key] ? `<a class="btn small primary" href="#/item/${item.id}/ready/${r.key}">📋 Ready for ${h(READY_PROFILES[r.key].name)}</a>` : ''}<a class="btn small" href="${r.sellUrl}" target="_blank" rel="noopener">Open ${h(r.name.split(' (')[0])} ↗</a><button class="btn small ${READY_PROFILES[r.key] ? '' : 'primary'}" data-act="add-listing" data-platform="${r.key}">+ Track listing</button></div>
       </li>`).join('')}
     </ol>
     <p class="small muted">Tip: copy your listing text from "Write the listing" first, post it, then paste the listing URL here with "Track listing".</p>`;

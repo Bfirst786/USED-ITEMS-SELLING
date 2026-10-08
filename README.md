@@ -38,6 +38,13 @@ stays on your phone.
   The RealReal, Chairish, Kaiyo, Pinkbike, Decluttr, FB groups) by category, price
   tier and whether the item is bulky. Each one shows why it was picked and links
   straight to that platform's sell page. eBay is always included.
+- **Ready for eBay**: a step-by-step sheet in the order of eBay's listing form:
+  photos (saved to your camera roll in one tap), title, category, item specifics,
+  condition, description, price with Best Offer thresholds based on your lowest
+  price, shipping, and returns. Each field has a Copy button and a check mark. Claude
+  can fill in the category and item specifics. Paste the eBay link at the end and
+  the app starts tracking the listing. Other marketplaces can be added as profiles
+  in `js/ready.js`.
 - **Listing tracker**: for each platform, store the listing URL, posting date, price
   and status (active / ended / sold). Mark a listing "renewed" when you bump it.
   Delete a listing from tracking with its 🗑 button.
@@ -155,6 +162,7 @@ npm test       # unit tests (Node 18+) for pricing, platforms, reminders and wri
 | `js/reminders.js` | Reminder rules engine and calendar (.ics) export |
 | `js/writer.js` | Listing drafts, quick edits and the checklist |
 | `js/ai.js` | Claude API calls (photo analysis, listing editing) |
+| `js/ready.js` | "Ready for <marketplace>" sheets (eBay profile) |
 | `js/shipping.js` | Shipping estimator (box presets, dimensional weight, rate ranges) |
 | `js/sheets.js` | Google Sheets sync: row building, the Apps Script, and sending updates |
 | `sw.js`, `manifest.webmanifest` | Offline support and install-to-home-screen |
