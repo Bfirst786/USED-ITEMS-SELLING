@@ -95,3 +95,18 @@ test('bad confidence values fall back to low; schema requires every field', () =
 test('packed weight is never less than the item itself', () => {
   assert.equal(shippingFromEstimate(est({ packed_weight_lb: 3, item_weight_lb: 22 })).lb, 22);
 });
+
+import { pirateShipDetails, CALCULATORS, PIRATE_SHIP } from '../js/shipping.js';
+
+test('Pirate Ship is the first rate source and gets ready-to-copy package details', () => {
+  assert.equal(CALCULATORS[0].label, 'Pirate Ship');
+  assert.match(PIRATE_SHIP.appUrl, /^https:\/\/ship\.pirateship\.com/);
+  const d = pirateShipDetails({ lb: 25, oz: 7, l: 18, w: 18, h: 16 });
+  assert.equal(d.weight.text, '25 lb 7 oz');
+  assert.equal(d.dims.text, '18 × 18 × 16 in');
+  assert.equal(d.packageType, 'Box or Rigid Packaging');
+  const partial = pirateShipDetails({ lb: 2 });
+  assert.equal(partial.dims, null);
+  assert.equal(partial.weight.text, '2 lb 0 oz');
+  assert.equal(pirateShipDetails({}).weight, null);
+});

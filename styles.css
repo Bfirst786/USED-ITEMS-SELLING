@@ -263,3 +263,8 @@ code { font-size: .85em; background: var(--bg); padding: 1px 4px; border-radius:
 .progress div { height: 100%; background: var(--ok); }
 .ready .row.between { flex-wrap: nowrap; }
 .ready .row.between b { flex: 1; }
+
+.pirate { border: 2px solid var(--brand); border-radius: 12px; padding: 12px; margin: 12px 0; background: var(--brand-soft); }
+.ps-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.ps-row span { width: 96px; flex: none; font-size: .85rem; }
+.ps-row b { flex: 1; }

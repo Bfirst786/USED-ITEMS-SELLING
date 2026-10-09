@@ -52,7 +52,9 @@ stays on your phone.
   Claude size the item from your photos and details (using published specs when it
   recognises the model), pick a padded box and estimate the packed weight, with
   packing tips. Estimates are marked until you weigh or measure. Or pick a box preset
-  and enter dimensions and packed weight yourself to get a rough USPS Ground Advantage / UPS Ground price range. It
+  and enter dimensions and packed weight yourself. A **Ship with Pirate Ship** panel (the
+  recommended way to get exact rates and buy labels) shows the package type,
+  dimensions and weight ready to copy, with a button to open Pirate Ship to get a rough USPS Ground Advantage / UPS Ground price range. It
   accounts for dimensional weight and flags oversize or overweight boxes, then suggests
   what to charge the buyer or the price to list at with free shipping. Links to the
   carriers' calculators are included for exact prices.

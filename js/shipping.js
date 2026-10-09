@@ -40,11 +40,31 @@ const CARRIERS = {
   },
 };
 
+// Pirate Ship is the primary way to check exact rates and buy labels: free account,
+// discounted USPS and UPS rates, pay only for the labels you buy.
+export const PIRATE_SHIP = {
+  name: 'Pirate Ship',
+  appUrl: 'https://ship.pirateship.com/',
+  siteUrl: 'https://www.pirateship.com/',
+};
+
 export const CALCULATORS = [
+  { label: 'Pirate Ship', url: PIRATE_SHIP.appUrl },
   { label: 'USPS price calculator', url: 'https://postcalc.usps.com/' },
-  { label: 'Pirate Ship (discounted USPS & UPS)', url: 'https://www.pirateship.com/' },
   { label: 'UPS', url: 'https://www.ups.com/' },
 ];
+
+// What Pirate Ship's "Create a label" form asks for about the package.
+export function pirateShipDetails(s = {}) {
+  const lb = Number(s.lb) || 0;
+  const oz = Number(s.oz) || 0;
+  const dims = [s.l, s.w, s.h].map((d) => Number(d) || 0);
+  return {
+    packageType: 'Box or Rigid Packaging',
+    weight: lb || oz ? { lb, oz, text: `${lb} lb ${oz} oz` } : null,
+    dims: dims.every((d) => d > 0) ? { l: dims[0], w: dims[1], h: dims[2], text: `${dims[0]} × ${dims[1]} × ${dims[2]} in` } : null,
+  };
+}
 
 function interpolate(table, lb) {
   if (lb <= table[0][0]) return [table[0][1], table[0][2]];

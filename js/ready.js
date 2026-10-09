@@ -105,7 +105,7 @@ function ebaySheet(item, settings = {}) {
   } else {
     fields.push(
       { key: 'package', step: 'Delivery', label: 'Package weight & size', value: sh.lb || sh.oz ? `${sh.lb || 0} lb ${sh.oz || 0} oz${sh.l && sh.w && sh.h ? `\n${sh.l} × ${sh.w} × ${sh.h} in` : ''}` : '', copy: false, multiline: true, warn: sh.lb || sh.oz ? (sh.estimated ? 'Estimated by Claude — weigh and measure the packed box before buying a label.' : '') : 'Add a packed weight in "Shipping estimate" so eBay can calculate postage.' },
-      { key: 'shipping', step: 'Delivery', label: 'Shipping', value: est && est.ok ? `Calculated (buyer pays) — ${est.options.find((o) => o.key === est.best).name}\nTypical cost ${money(est.low)}–${money(est.high)}` : 'Calculated (buyer pays)', copy: false, multiline: true, hint: 'Calculated shipping charges each buyer the right amount for their distance. eBay\'s labels are discounted.' },
+      { key: 'shipping', step: 'Delivery', label: 'Shipping', value: est && est.ok ? `Calculated (buyer pays) — ${est.options.find((o) => o.key === est.best).name}\nTypical cost ${money(est.low)}–${money(est.high)}` : 'Calculated (buyer pays)', copy: false, multiline: true, hint: 'Calculated shipping charges each buyer the right amount for their distance. When it sells, buy the label on Pirate Ship (usually the cheapest) and paste the tracking number into the eBay order — or use eBay\'s own label if you prefer.' },
       { key: 'handling', step: 'Delivery', label: 'Handling time', value: '1 business day', copy: false, hint: 'Faster handling helps your listing rank.' }
     );
   }

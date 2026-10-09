@@ -1,5 +1,5 @@
 // Offline support: cache the app shell. Bump VERSION when files change.
-const VERSION = 'resell-v7';
+const VERSION = 'resell-v8';
 const SHELL = [
   './',
   'index.html',

@@ -5,11 +5,11 @@ import { DEFAULT_RULES, ACTIONS, TRIGGERS, computeReminders, isDue, toICS, isoDa
 import { generateTitle, generateDescription, titleCase, shorten, fixShouting, tidy, lint, limitsFor } from './writer.js';
 import { MODELS, analyzeItem, improveListing, callClaude, marketCheck, ebayAssist, packingEstimate } from './ai.js';
 import { READY_PROFILES, readySheet, readyProblems, EBAY_ASSIST_SCHEMA } from './ready.js';
-import { BOXES, CALCULATORS, estimateShipping, shippingAdvice, PACKING_SCHEMA, shippingFromEstimate } from './shipping.js';
+import { BOXES, CALCULATORS, estimateShipping, shippingAdvice, PACKING_SCHEMA, shippingFromEstimate, PIRATE_SHIP, pirateShipDetails } from './shipping.js';
 import { pushToSheet, scriptSource, newSecret, testSheet, urlProblem, backupToDrive, listDriveBackups, fetchDriveBackup, fetchDrivePhoto, SCRIPT_VERSION } from './sheets.js';
 
 // Shown in Settings so it's easy to tell which version a phone is running.
-export const APP_VERSION = '2026.10.08-packing';
+export const APP_VERSION = '2026.10.09-pirateship';
 
 // ---------- State ----------
 const DEFAULT_SETTINGS = {
@@ -887,8 +887,9 @@ function shippingHTML(item) {
     <label>Box<select data-ship="box">${Object.entries(BOXES).map(([k, b]) => `<option value="${k}" ${k === (sh.box || 'custom') ? 'selected' : ''}>${h(b.label)}</option>`).join('')}</select></label>
     <div class="grid3">${num('l', 'Length (in)')}${num('w', 'Width (in)')}${num('h', 'Height (in)')}</div>
     <div class="grid2">${num('lb', 'Weight (lb)', 'step="1"')}${num('oz', 'Ounces', 'step="1" max="15"')}</div>
+    <div id="pirate-ship">${pirateShipHTML(item)}</div>
     <div id="ship-results">${shippingResultsHTML(item)}</div>
-    <div class="links small">Exact prices: ${CALCULATORS.map((c) => `<a href="${c.url}" target="_blank" rel="noopener">${c.label}</a>`).join(' · ')}</div>`;
+    <div class="links small">Other calculators: ${CALCULATORS.slice(1).map((c) => `<a href="${c.url}" target="_blank" rel="noopener">${c.label}</a>`).join(' · ')}</div>`;
 }
 
 function packingNoteHTML(item) {
@@ -926,6 +927,20 @@ async function runPackingEstimate(item) {
   toast('Box and weight estimated — check them before buying a label.', 4000);
 }
 
+// Primary shipping option: exact rates and labels on Pirate Ship.
+function pirateShipHTML(item) {
+  const d = pirateShipDetails(item.shipping);
+  const row = (label, text) => `<div class="ps-row"><span class="muted">${label}</span><b>${h(text)}</b><button class="btn small" data-act="copy-text" data-text="${h(text)}">Copy</button></div>`;
+  return `<div class="pirate">
+    <div class="row between"><b>🏴‍☠️ Ship with Pirate Ship</b><span class="badge status-listed">Recommended</span></div>
+    <p class="small muted">Free account, discounted USPS &amp; UPS rates, pay only for the labels you buy. Use it for exact prices and to print your label.</p>
+    ${d.weight || d.dims ? `${row('Package type', d.packageType)}${d.dims ? row('Dimensions', d.dims.text) : ''}${d.weight ? row('Weight', d.weight.text) : ''}
+      ${item.shipping?.estimated ? '<div class="small warn-text">⚖️ These are estimates — weigh and measure the packed box before buying the label.</div>' : ''}` : '<p class="small">Enter the box size and weight below (or tap ✨ Estimate) and they\'ll appear here ready to copy into Pirate Ship.</p>'}
+    <div class="btn-row"><a class="btn primary" href="${PIRATE_SHIP.appUrl}" target="_blank" rel="noopener">Open Pirate Ship ↗</a></div>
+    <p class="small muted">In Pirate Ship: Create a label → enter the buyer's address → choose the package type, dimensions and weight above → compare rates → buy and print.</p>
+  </div>`;
+}
+
 function shippingResultsHTML(item) {
   const sh = item.shipping || {};
   if (!sh.lb && !sh.oz) return '';
@@ -935,11 +950,11 @@ function shippingResultsHTML(item) {
   const adv = shippingAdvice(est, price);
   return `
     <div class="suggest">
-      <div class="suggest-top"><span class="muted">Rough estimate</span><b>${money(est.low)}–${money(est.high)}</b></div>
+      <div class="suggest-top"><span class="muted">Rough estimate (discounted label rates, like Pirate Ship)</span><b>${money(est.low)}–${money(est.high)}</b></div>
       <ul class="ship-opts">${est.options.map((o) => `<li class="${o.key === est.best ? 'best' : ''}"><b>${h(o.name)}</b>${o.key === est.best ? ' <span class="badge status-listed">cheapest</span>' : ''}<br>
         ${o.unavailable ? `<span class="small muted">${h(o.unavailable)}</span>` : `${money(o.low)}–${money(o.high)} <span class="small muted">· billed as ${o.billable} lb</span>`}
         ${o.notes.map((n) => `<div class="small muted">${h(n)}</div>`).join('')}</li>`).join('')}</ul>
-      <p class="small muted">Low end = nearby, high end = across the country. Based on typical discounted label prices; check a calculator before you commit.</p>
+      <p class="small muted">Low end = nearby, high end = across the country. For the exact price, enter the buyer's address in Pirate Ship.</p>
       ${adv ? `<div class="suggest-row"><span>Charge buyer about <b>${money(adv.chargeBuyer)}</b></span>${adv.freeShippingPrice ? `<span>Or list at <b>${money(adv.freeShippingPrice)}</b> with free shipping</span>` : ''}</div>` : ''}
       ${adv && adv.worthShipping === false ? '<div class="note">Shipping could cost over half the item\'s price — local pickup is probably better.</div>' : ''}
       ${est.warnings.map((w) => `<div class="small">⚠️ ${h(w)}</div>`).join('')}
@@ -1149,6 +1164,8 @@ function bindItem(v, item) {
         return runMarketCheck(item);
       case 'pack-estimate':
         return runPackingEstimate(item);
+      case 'copy-text':
+        return copy(b.dataset.text);
       case 'use-market': {
         const m = item.marketCheck;
         item.askingPrice = m.listPrice;
@@ -1262,6 +1279,7 @@ function updateShipping(item, key, value) {
   const est = estimateShipping(item.shipping);
   item.shipping.estimate = est.ok ? { typical: est.typical, low: est.low, high: est.high, carrier: est.options.find((o) => o.key === est.best).name } : null;
   $('#ship-results').innerHTML = shippingResultsHTML(item);
+  $('#pirate-ship').innerHTML = pirateShipHTML(item);
   $('#sec-ship summary').innerHTML = `🚚 Shipping estimate${item.shipping.estimate ? ` <span class="badge">~${money(item.shipping.estimate.typical)}</span>` : ''}`;
   saveItemSoon(item);
 }
