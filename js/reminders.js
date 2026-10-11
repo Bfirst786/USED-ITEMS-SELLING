@@ -185,7 +185,7 @@ export function toICS(reminders, itemsById, hour = 9) {
     `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}T${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}Z`;
   const local = (d) => `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}T${p(d.getHours())}${p(d.getMinutes())}00`;
   const esc = (s) => String(s || '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/[,;]/g, (m) => '\\' + m);
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Resell Assistant//EN', 'CALSCALE:GREGORIAN'];
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Re-Sell Assistant//EN', 'CALSCALE:GREGORIAN'];
   const now = new Date();
   for (const r of reminders) {
     const item = itemsById[r.itemId] || {};

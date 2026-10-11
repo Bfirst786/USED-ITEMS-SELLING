@@ -1,4 +1,4 @@
-# Resell Assistant
+# Re-Sell Assistant
 
 A phone-first app for selling your used stuff. Photograph an item, get a suggested
 price, see which platforms to list it on, write the listing, track every listing's
@@ -93,6 +93,13 @@ stays on your phone.
   each photo is uploaded only once. **Restore from Google Drive** brings everything
   back, including onto a new phone, using the Web app URL and your sync code (shown
   under Settings → Google Sheets sync → Security & sync code).
+- **Home screen icon & name**: in **Settings → Home screen icon & name**, choose the
+  price-tag icon, letters, an emoji or one of your photos, pick the colors, and change
+  the name shown under the icon (default "Re-Sell Assistant"). Phones only read the
+  icon and name when the app is added to the home screen; the section explains how to
+  re-add it on iPhone without losing data (back up to Drive, add the new icon from
+  Safari, restore, then remove the old one). The choice is kept per phone, not in
+  backups.
 - **Backup file**: download/restore a full backup file (photos included) and export a
   CSV spreadsheet of all listings.
 
@@ -169,5 +176,6 @@ npm test       # unit tests (Node 18+) for pricing, platforms, reminders and wri
 | `js/ai.js` | Claude API calls (photo analysis, listing editing) |
 | `js/ready.js` | "Ready for <marketplace>" sheets (eBay profile) |
 | `js/shipping.js` | Shipping estimator (box presets, dimensional weight, rate ranges) |
+| `js/icon.js` | Home-screen icon drawing and the generated manifest for a custom icon/name |
 | `js/sheets.js` | Google Sheets sync: row building, the Apps Script, and sending updates |
 | `sw.js`, `manifest.webmanifest` | Offline support and install-to-home-screen |

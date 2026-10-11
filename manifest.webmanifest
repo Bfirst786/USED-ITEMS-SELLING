@@ -1,6 +1,6 @@
 {
-  "name": "Resell Assistant",
-  "short_name": "Resell",
+  "name": "Re-Sell Assistant",
+  "short_name": "Re-Sell Assistant",
   "description": "Photograph, price, list and track the things you're selling.",
   "start_url": "./",
   "scope": "./",

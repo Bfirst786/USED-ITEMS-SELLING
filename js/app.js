@@ -6,10 +6,11 @@ import { generateTitle, generateDescription, titleCase, shorten, fixShouting, ti
 import { MODELS, analyzeItem, improveListing, callClaude, marketCheck, ebayAssist, packingEstimate } from './ai.js';
 import { READY_PROFILES, readySheet, readyProblems, EBAY_ASSIST_SCHEMA } from './ready.js';
 import { BOXES, CALCULATORS, estimateShipping, shippingAdvice, PACKING_SCHEMA, shippingFromEstimate, PIRATE_SHIP, pirateShipDetails } from './shipping.js';
+import { APP_NAME, ICON_STYLES, ICON_COLORS, SYMBOL_COLORS, DEFAULT_ICON, normalizeIcon, isDefaultIcon, buildManifest, drawIcon } from './icon.js';
 import { pushToSheet, scriptSource, newSecret, testSheet, urlProblem, backupToDrive, listDriveBackups, fetchDriveBackup, fetchDrivePhoto, SCRIPT_VERSION } from './sheets.js';
 
 // Shown in Settings so it's easy to tell which version a phone is running.
-export const APP_VERSION = '2026.10.09-pirateship';
+export const APP_VERSION = '2026.10.11-icon';
 
 // ---------- State ----------
 const DEFAULT_SETTINGS = {
@@ -33,6 +34,7 @@ const S = {
   rem: { done: {}, snoozed: {}, notified: {} },
   sync: { dirty: false, lastOk: '', lastError: '', running: false, backupDirty: true, lastBackup: '', lastBackupError: '', backingUp: false },
   filter: { tier: 'all', status: 'active', q: '' },
+  icon: { ...DEFAULT_ICON }, // per phone; not included in backups
 };
 
 const photoURLs = new Map();
@@ -74,6 +76,7 @@ async function load() {
   S.rules = await db.getMeta('rules', DEFAULT_RULES);
   S.rem = { done: {}, snoozed: {}, notified: {}, ...(await db.getMeta('reminderState', {})) };
   S.sync = { ...S.sync, ...(await db.getMeta('syncState', {})), running: false };
+  S.icon = normalizeIcon(await db.getMeta('homeIcon', {}));
   if (!S.settings.sheetSecret) {
     S.settings.sheetSecret = newSecret();
     await db.setMeta('settings', S.settings);
@@ -1599,6 +1602,156 @@ async function checkNotifications() {
   await saveRem();
 }
 
+// ---------- Home-screen icon & name ----------
+function imageFromURL(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not read that image.'));
+    img.src = url;
+  });
+}
+
+async function renderIcon(icon, size) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const photo = icon.style === 'photo' && icon.photo ? await imageFromURL(icon.photo) : null;
+  drawIcon(c.getContext('2d'), size, icon, photo);
+  return c.toDataURL('image/png');
+}
+
+// Square-crop and shrink a picked photo so it's small enough to keep in settings.
+async function iconPhoto(file) {
+  const img = await loadImage(file);
+  const s = Math.min(img.naturalWidth, img.naturalHeight);
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  c.getContext('2d').drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, 512, 512);
+  return c.toDataURL('image/jpeg', 0.85);
+}
+
+let manifestURL = '';
+// Points the page's icon, apple-touch-icon, title and manifest at the custom icon.
+async function applyIcon() {
+  const icon = S.icon;
+  const custom = !isDefaultIcon(icon);
+  const png180 = custom ? await renderIcon(icon, 180) : 'icons/icon-180.png';
+  const png192 = custom ? await renderIcon(icon, 192) : 'icons/icon-192.png';
+  const png512 = custom ? await renderIcon(icon, 512) : 'icons/icon-512.png';
+  $('link[rel="apple-touch-icon"]').href = png180;
+  const fav = $('link[rel="icon"]');
+  fav.href = custom ? png192 : 'icons/icon.svg';
+  fav.type = custom ? 'image/png' : 'image/svg+xml';
+  $('meta[name="apple-mobile-web-app-title"]').content = icon.name;
+  document.title = icon.name;
+  if (manifestURL) URL.revokeObjectURL(manifestURL);
+  manifestURL = '';
+  const link = $('link[rel="manifest"]');
+  if (!custom && icon.name === APP_NAME) {
+    link.href = 'manifest.webmanifest';
+    return;
+  }
+  const manifest = buildManifest(location.href.split('#')[0], {
+    name: icon.name,
+    icons: [
+      { src: png192, sizes: '192x192', type: 'image/png' },
+      { src: png512, sizes: '512x512', type: 'image/png' },
+      { src: png512, sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+    ],
+  });
+  manifestURL = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' }));
+  link.href = manifestURL;
+}
+
+async function saveIcon(changes) {
+  S.icon = normalizeIcon({ ...S.icon, ...changes });
+  await db.setMeta('homeIcon', S.icon);
+  await applyIcon();
+}
+
+function iconHTML() {
+  const ic = S.icon;
+  const swatches = (colors, cur, key) =>
+    `<div class="swatches">${colors.map((c) => `<button class="swatch ${c === cur ? 'on' : ''}" style="background:${c}" data-icon-color="${key}" data-color="${c}" aria-label="${c}"></button>`).join('')}<input type="color" class="swatch-pick" data-icon-pick="${key}" value="${cur}" aria-label="Custom color"></div>`;
+  return `
+    <div class="icon-editor">
+      <div class="icon-preview"><img id="icon-preview" alt="Home screen icon preview"><span id="icon-preview-name">${h(ic.name)}</span></div>
+      <div class="icon-controls">
+        <label>Name under the icon<input id="icon-name" value="${h(ic.name)}" maxlength="40"></label>
+        <p class="small muted">iPhone shows about 12 characters under an icon and trims the rest.</p>
+      </div>
+    </div>
+    <label>Picture</label>
+    <div class="seg">${Object.entries(ICON_STYLES).map(([k, label]) => `<label class="check"><input type="radio" name="icon-style" value="${k}" ${ic.style === k ? 'checked' : ''}> ${label}</label>`).join('')}</div>
+    <div ${ic.style === 'text' ? '' : 'hidden'}><label>Letters (up to 3)<input id="icon-text" value="${h(ic.text)}" maxlength="6" autocapitalize="characters"></label></div>
+    <div ${ic.style === 'emoji' ? '' : 'hidden'}><label>Emoji<input id="icon-emoji" value="${h(ic.emoji)}" maxlength="8"></label>
+      <div class="btn-row tight">${['💰', '🏷️', '📦', '🛒', '💵', '♻️', '🤑', '🪙'].map((e) => `<button class="btn small" data-icon-emoji="${e}">${e}</button>`).join('')}</div></div>
+    <div ${ic.style === 'photo' || !ic.photo ? '' : 'hidden'} class="btn-row tight"><label class="btn small">📷 ${ic.photo ? 'Change photo' : 'Use a photo'}<input type="file" accept="image/*" id="icon-photo" hidden></label></div>
+    <div ${ic.style === 'photo' ? 'hidden' : ''}>
+      <label>Background</label>${swatches(ICON_COLORS, ic.bg, 'bg')}
+      ${ic.style === 'emoji' ? '' : `<label>Symbol color</label>${swatches(SYMBOL_COLORS, ic.fg, 'fg')}`}
+    </div>
+    <div class="btn-row"><button class="btn" id="icon-save-png">⬇️ Save icon image</button><button class="btn" id="icon-reset">Reset to default</button></div>
+    <div class="note small">
+      <b>Your phone only picks up a new icon or name when the app is added to the home screen.</b>
+      <p><b>iPhone:</b> removing a home-screen app deletes its data, so add the new one first:</p>
+      <ol class="steps">
+        <li>In this app: Settings → <b>☁️ Back up to Google Drive now</b>. Note your Web app URL and sync code (Google Sheets sync → Security &amp; sync code).</li>
+        <li>Open the app's web address in <b>Safari</b>, go to Settings → this section, and set the icon and name there (Safari keeps its own copy of the app's data, so it's set separately).</li>
+        <li>In Safari: Share → <b>Add to Home Screen</b>. You can still edit the name there. Tap Add.</li>
+        <li>Open the new icon → Settings → <b>⤵️ Restore from Google Drive</b> with your Web app URL and sync code, and check your items are there.</li>
+        <li>Only then delete the old icon (press and hold → Remove App → Delete).</li>
+      </ol>
+      <p><b>Android (Chrome):</b> set the icon here in Chrome, then ⋮ → <i>Add to Home screen</i> / <i>Install app</i>. Removing the old icon doesn't delete your data on Android.</p>
+    </div>`;
+}
+
+function wireIconEditor(v) {
+  const preview = async () => {
+    const img = $('#icon-preview', v);
+    if (img) img.src = await renderIcon(S.icon, 180);
+    const name = $('#icon-preview-name', v);
+    if (name) name.textContent = S.icon.name;
+  };
+  const update = async (changes, rerender) => {
+    await saveIcon(changes);
+    if (rerender) {
+      $('#icon-body', v).innerHTML = iconHTML();
+      wireIconEditor(v);
+    } else preview();
+  };
+  preview();
+  $('#icon-name', v).oninput = (e) => {
+    S.icon.name = e.target.value;
+    $('#icon-preview-name', v).textContent = e.target.value.trim() || APP_NAME;
+  };
+  $('#icon-name', v).onchange = (e) => update({ name: e.target.value });
+  for (const r of $$('input[name="icon-style"]', v)) {
+    r.onchange = () => {
+      if (r.value === 'photo' && !S.icon.photo) return $('#icon-photo', v).click();
+      update({ style: r.value }, true);
+    };
+  }
+  const t = $('#icon-text', v);
+  if (t) t.oninput = () => update({ text: t.value });
+  const em = $('#icon-emoji', v);
+  if (em) em.oninput = () => update({ emoji: em.value });
+  for (const b of $$('[data-icon-emoji]', v)) b.onclick = () => update({ emoji: b.dataset.iconEmoji }, true);
+  for (const b of $$('[data-icon-color]', v)) b.onclick = () => update({ [b.dataset.iconColor]: b.dataset.color }, true);
+  for (const p of $$('[data-icon-pick]', v)) p.onchange = () => update({ [p.dataset.iconPick]: p.value }, true);
+  $('#icon-photo', v).onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return update({}, true);
+    const photo = await busy('Preparing photo…', () => iconPhoto(file));
+    if (photo) update({ photo, style: 'photo' }, true);
+  };
+  $('#icon-save-png', v).onclick = async () => {
+    const url = await renderIcon(S.icon, 512);
+    download(await (await fetch(url)).blob(), 're-sell-icon.png');
+  };
+  $('#icon-reset', v).onclick = () => update({ ...DEFAULT_ICON }, true);
+}
+
 // ---------- Settings ----------
 function viewSettings() {
   const st = S.settings;
@@ -1696,12 +1849,14 @@ function viewSettings() {
     </div></details>
 
     <p class="small muted center">App version ${APP_VERSION} · script version ${SCRIPT_VERSION}</p>
+    <details class="card section"><summary>🎨 Home screen icon &amp; name</summary><div class="section-body" id="icon-body">${iconHTML()}</div></details>
     <details class="card section"><summary>📱 Install on your phone</summary><div class="section-body small">
       <p><b>iPhone (Safari):</b> tap Share → <i>Add to Home Screen</i>.</p>
       <p><b>Android (Chrome):</b> tap ⋮ → <i>Install app</i> / <i>Add to Home screen</i>.</p>
       <p>It then opens full screen like a normal app and works offline (Claude features need internet).</p>
     </div></details>`;
   const v = setView('Settings', html);
+  wireIconEditor(v);
 
   for (const k of ['apiKey', 'location', 'pickupNote', 'priceNote', 'shippingNote']) {
     $(`#s-${k}`).oninput = (e) => {
@@ -1838,7 +1993,7 @@ async function exportBackup() {
 async function importBackup(file) {
   if (!file) return;
   const data = JSON.parse(await file.text());
-  if (data.app !== 'resell-assistant') throw new Error('That file is not a Resell Assistant backup.');
+  if (data.app !== 'resell-assistant') throw new Error('That file is not a Re-Sell Assistant backup.');
   if (!confirm(`Restore ${data.items.length} items? Items with the same ID will be overwritten.`)) return;
   for (const [id, url] of Object.entries(data.photos || {})) {
     const blob = await (await fetch(url)).blob();
@@ -1868,6 +2023,7 @@ function exportCSV() {
 // ---------- Boot ----------
 async function boot() {
   await load();
+  applyIcon().catch((e) => console.error(e));
   db.persist();
   window.addEventListener('hashchange', render);
   await render();
