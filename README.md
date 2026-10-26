@@ -45,6 +45,13 @@ stays on your phone.
   can fill in the category and item specifics. Paste the eBay link at the end and
   the app starts tracking the listing. Other marketplaces can be added as profiles
   in `js/ready.js`.
+- **Post to eBay** (optional): with eBay connected, the Ready for eBay screen gets a
+  **🚀 Post to eBay** button. Pick the eBay category (suggested by eBay from the title,
+  with any item specifics eBay requires for it), check the condition, and post. Photos
+  are uploaded to eBay's picture hosting through your Google script, and the listing
+  goes live with your title, specifics, description, price, Best Offer thresholds,
+  package size and your eBay business policies (shipping, payment, returns). The
+  listing link is tracked automatically, and **Update eBay listing** revises it later.
 - **Listing tracker**: for each platform, store the listing URL, posting date, price
   and status (active / ended / sold). Mark a listing "renewed" when you bump it.
   Delete a listing from tracking with its 🗑 button.
@@ -144,6 +151,26 @@ The script only accepts updates carrying the private sync code built into it, so
 knowing the URL isn't enough to change your sheet. The sheet is a mirror: make
 changes in the app, because edits made in the sheet are overwritten.
 
+## Post to eBay (optional)
+
+Needs the Google Sheet connection above and an eBay developer account
+(<https://developer.ebay.com>).
+
+1. In the developer account, use the **Production** keyset. Under **Alerts &
+   Notifications**, turn on the exemption from Marketplace Account Deletion (the app
+   stores no other eBay users' data).
+2. **User Tokens (eBay Sign-In) → Add eBay Redirect URL**: privacy policy URL
+   `https://<your-username>.github.io/<repo-name>/privacy.html`, **Auth accepted URL**
+   = your script's Web app URL, declined URL = the app's address. Note the **RuName**.
+3. Update the Google script (Copy script → paste → Save → **Deploy → Manage deployments
+   → ✏️ → Version: New version → Deploy**), then run **authorizeEbay** once from the
+   editor and allow access.
+4. In Apps Script: **⚙️ Project Settings → Script properties**, add `EBAY_APP_ID`,
+   `EBAY_CERT_ID` and `EBAY_RUNAME`. The keys never reach the phone.
+5. In the app: **Settings → eBay posting → Connect eBay**, sign in, come back and tap
+   **Check connection**. Enter your ZIP code and **Load my eBay policies** (create
+   them on eBay under Account → Business policies first).
+
 ## Good to know
 
 - **Notifications**: tap *Turn on notifications* on the Reminders screen. Without a
@@ -176,6 +203,7 @@ npm test       # unit tests (Node 18+) for pricing, platforms, reminders and wri
 | `js/ai.js` | Claude API calls (photo analysis, listing editing) |
 | `js/ready.js` | "Ready for <marketplace>" sheets (eBay profile) |
 | `js/shipping.js` | Shipping estimator (box presets, dimensional weight, rate ranges) |
+| `js/ebay.js` | Builds the eBay inventory item and offer for Post to eBay |
 | `js/icon.js` | Home-screen icon drawing and the generated manifest for a custom icon/name |
 | `js/sheets.js` | Google Sheets sync: row building, the Apps Script, and sending updates |
 | `sw.js`, `manifest.webmanifest` | Offline support and install-to-home-screen |

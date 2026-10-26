@@ -280,3 +280,4 @@ code { font-size: .85em; background: var(--bg); padding: 1px 4px; border-radius:
 .swatch { width: 34px; height: 34px; border-radius: 50%; border: 2px solid var(--line); padding: 0; cursor: pointer; }
 .swatch.on { outline: 3px solid var(--brand); outline-offset: 2px; }
 input.swatch-pick { width: 44px; height: 36px; padding: 2px; margin: 0; }
+#eb-post .row input { flex: 1 1 180px; width: auto; }

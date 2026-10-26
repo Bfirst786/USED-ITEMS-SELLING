@@ -7,10 +7,12 @@ import { MODELS, analyzeItem, improveListing, callClaude, marketCheck, ebayAssis
 import { READY_PROFILES, readySheet, readyProblems, EBAY_ASSIST_SCHEMA } from './ready.js';
 import { BOXES, CALCULATORS, estimateShipping, shippingAdvice, PACKING_SCHEMA, shippingFromEstimate, PIRATE_SHIP, pirateShipDetails } from './shipping.js';
 import { APP_NAME, ICON_STYLES, ICON_COLORS, SYMBOL_COLORS, DEFAULT_ICON, normalizeIcon, isDefaultIcon, buildManifest, drawIcon } from './icon.js';
+import { EBAY_CONDITIONS, buildEbayListing, defaultCondition, missingAspects } from './ebay.js';
+import { ebayStatus, ebayAuthUrl, ebayDisconnect, ebayPolicies, ebayCategories, postToEbay } from './sheets.js';
 import { pushToSheet, scriptSource, newSecret, testSheet, urlProblem, backupToDrive, listDriveBackups, fetchDriveBackup, fetchDrivePhoto, SCRIPT_VERSION } from './sheets.js';
 
 // Shown in Settings so it's easy to tell which version a phone is running.
-export const APP_VERSION = '2026.10.11-icon';
+export const APP_VERSION = '2026.10.26-ebay-post';
 
 // ---------- State ----------
 const DEFAULT_SETTINGS = {
@@ -25,6 +27,7 @@ const DEFAULT_SETTINGS = {
   notify: false,
   sheetUrl: '',
   sheetSecret: '',
+  ebay: {}, // { connected, zip, fulfillment, payment, returns, location, names: {...} }
 };
 
 const S = {
@@ -784,6 +787,7 @@ function viewReady(id, platform) {
       <p class="small muted">${doneCount} of ${fields.length} done</p>
     </div>
     <div class="card ready">${rows.join('')}</div>
+    ${platform === 'ebay' ? ebayPostHTML(item, fields) : ''}
     <div class="card">
       <h2>Posted it?</h2>
       ${listed ? `<p class="small">Tracking your ${h(profile.name)} listing: <a href="${h(listed.url)}" target="_blank" rel="noopener">${h(listed.url || 'no link')}</a></p>` : `
@@ -793,6 +797,7 @@ function viewReady(id, platform) {
       ${doneCount ? '<div class="btn-row"><button class="btn small" data-act="ready-reset">Clear check marks</button></div>' : ''}
     </div>`;
   const v = setView(`Ready for ${profile.name}`, html, { back: `#/item/${item.id}` });
+  if (platform === 'ebay') wireEbayPost(v, item);
   const byKey = Object.fromEntries(fields.map((f) => [f.key, f]));
   const markDone = async (key, on = true) => {
     state.done[key] = on;
@@ -821,6 +826,15 @@ function viewReady(id, platform) {
         return viewReadyKeepScroll(item.id, platform);
       case 'assist':
         return runReadyAssist(item, platform);
+      case 'eb-find':
+        return ebayFindCategory(item);
+      case 'eb-cat': {
+        const c = ebaySuggestions[Number(t.dataset.i)];
+        if (c) await ebayPickCategory(item, c);
+        return viewReadyKeepScroll(item.id, platform);
+      }
+      case 'eb-post':
+        return runEbayPost(item, fields);
       case 'ready-reset':
         state.done = {};
         await saveItem(item);
@@ -838,6 +852,122 @@ function viewReady(id, platform) {
       }
     }
   };
+}
+
+// ---------- Post to eBay (Ready for eBay screen) ----------
+let ebaySuggestions = [];
+
+function ebayPostState(item) {
+  const r = (item.ready = item.ready || {});
+  const e = (r.ebay = r.ebay || { done: {} });
+  return (e.post = e.post || { extraAspects: {} });
+}
+
+function ebayPostHTML(item, fields) {
+  const st = S.settings;
+  const eb = st.ebay || {};
+  const post = ebayPostState(item);
+  const listing = buildEbayListing(item, fields, post, eb);
+  const missing = missingAspects(post.requiredAspects, listing.inventoryItem.product.aspects);
+  const setup = !st.sheetUrl ? 'Connect your Google Sheet, then eBay, in <a href="#/settings">Settings</a>.' : !eb.connected ? 'Connect eBay in <a href="#/settings">Settings → eBay posting</a> first.' : '';
+  const aiCat = item.ready?.ebay?.ai?.category;
+  const problems = listing.problems.filter((p) => !/requires "/.test(p));
+  return `<div class="card" id="eb-post">
+    <h2>🚀 Post to eBay</h2>
+    <p class="small muted">Sends this listing straight to eBay — photos, title, item specifics, condition, description, price, Best Offer and package size — using your eBay business policies.</p>
+    ${setup ? `<div class="note small">${setup}</div>` : ''}
+    ${post.url ? `<p class="small">On eBay: <a href="${h(post.url)}" target="_blank" rel="noopener">${h(post.url)}</a>${post.postedAt ? ` · last sent ${h(post.postedAt.slice(0, 10))}` : ''}</p>` : ''}
+    <label>eBay category</label>
+    <div class="small">${post.categoryId ? `<b>${h(post.categoryName || post.categoryId)}</b> <span class="muted">(#${h(post.categoryId)})</span>` : '<span class="muted">Not chosen yet</span>'}</div>
+    ${aiCat ? `<div class="small muted">Claude suggested: ${h(aiCat)}</div>` : ''}
+    <div class="row"><input id="eb-q" value="${h(item.draftTitle || item.title || '')}" placeholder="Search words, e.g. brand and model"><button class="btn" data-act="eb-find" ${setup ? 'disabled' : ''}>Find</button></div>
+    <div id="eb-cats"></div>
+    ${missing.length ? `<h3>Required by eBay for this category</h3>${missing.map((a) => `<label>${h(a.name)}<input data-eb-aspect="${h(a.name)}" list="eb-l-${h(a.name).replace(/\W/g, '')}" value="${h(post.extraAspects?.[a.name] || '')}"></label>
+      ${a.values?.length ? `<datalist id="eb-l-${h(a.name).replace(/\W/g, '')}">${a.values.map((x) => `<option value="${h(x)}">`).join('')}</datalist>` : ''}`).join('')}` : ''}
+    <label>Condition<select id="eb-cond">${Object.entries(EBAY_CONDITIONS).map(([k, label]) => `<option value="${k}" ${k === (post.condition || defaultCondition(item)) ? 'selected' : ''}>${h(label)}</option>`).join('')}</select></label>
+    <label class="check"><input type="checkbox" id="eb-offer" ${post.bestOffer !== false ? 'checked' : ''}> Accept offers (auto-accept / auto-decline as shown above)</label>
+    ${problems.length ? `<div class="note small"><b>Before posting:</b><ul>${problems.map((p) => `<li>${h(p)}</li>`).join('')}</ul></div>` : ''}
+    <div class="btn-row"><button class="btn primary big" data-act="eb-post" ${setup || listing.problems.length ? 'disabled' : ''}>${post.listingId ? '🔄 Update eBay listing' : '🚀 Post to eBay'}</button></div>
+    <p class="small muted">${post.listingId ? 'Updating changes the live listing (price, text, photos, specifics).' : 'It goes live right away at your asking price. You can edit or end it on eBay any time.'}</p>
+  </div>`;
+}
+
+function wireEbayPost(v, item) {
+  const post = ebayPostState(item);
+  const cond = $('#eb-cond', v);
+  if (cond)
+    cond.onchange = async () => {
+      post.condition = cond.value;
+      await saveItem(item);
+    };
+  const offer = $('#eb-offer', v);
+  if (offer)
+    offer.onchange = async () => {
+      post.bestOffer = offer.checked;
+      await saveItem(item);
+    };
+  for (const input of $$('[data-eb-aspect]', v)) {
+    input.onchange = async () => {
+      post.extraAspects = { ...(post.extraAspects || {}), [input.dataset.ebAspect]: input.value.trim() };
+      await saveItem(item);
+      viewReadyKeepScroll(item.id, 'ebay');
+    };
+  }
+}
+
+async function ebayFindCategory(item) {
+  const q = $('#eb-q').value.trim();
+  if (!q) return toast('Type a few words to search.');
+  const r = await busy('Asking eBay for categories…', () => ebayCategories(S.settings.sheetUrl, S.settings.sheetSecret, q));
+  if (!r) return;
+  ebaySuggestions = r.suggestions || [];
+  $('#eb-cats').innerHTML = ebaySuggestions.length
+    ? `<div class="btn-col">${ebaySuggestions.map((c, i) => `<button class="btn small" data-act="eb-cat" data-i="${i}" style="justify-content:flex-start;text-align:left">${h(c.path)}</button>`).join('')}</div>`
+    : '<p class="small muted">No matches — try fewer or different words.</p>';
+}
+
+async function ebayPickCategory(item, c) {
+  const post = ebayPostState(item);
+  const r = await busy('Checking what eBay needs for this category…', () => ebayCategories(S.settings.sheetUrl, S.settings.sheetSecret, '', c.id));
+  post.categoryId = c.id;
+  post.categoryName = c.path;
+  post.requiredAspects = r?.aspects || [];
+  await saveItem(item);
+}
+
+async function runEbayPost(item, fields) {
+  const st = S.settings;
+  const eb = st.ebay || {};
+  const post = ebayPostState(item);
+  const listing = buildEbayListing(item, fields, post, eb);
+  if (listing.problems.length) return toast(listing.problems[0], 5000);
+  if (!post.listingId && !confirm(`Post "${listing.inventoryItem.product.title}" to eBay for ${money(listing.price)}? It goes live right away.`)) return;
+  const label = $('#busy-label');
+  const r = await busy('Posting to eBay…', () =>
+    postToEbay({
+      url: st.sheetUrl,
+      secret: st.sheetSecret,
+      listing,
+      photoIds: item.photos,
+      getPhoto: photoBase64,
+      locationKey: eb.location,
+      postalCode: eb.zip,
+      onProgress: (text) => label && (label.textContent = text),
+    })
+  );
+  if (!r) return;
+  Object.assign(post, { listingId: r.listingId, offerId: r.offerId, url: r.url, postedAt: new Date().toISOString() });
+  let l = item.listings.find((x) => x.platform === 'ebay' && (x.ebayListingId === r.listingId || (!x.ebayListingId && x.status === 'active')));
+  if (!l) {
+    l = { id: db.uid(), platform: 'ebay', postedDate: today(), status: 'active' };
+    item.listings.push(l);
+  }
+  Object.assign(l, { url: r.url, price: listing.price, ebayListingId: r.listingId });
+  if (item.status === 'draft') item.status = 'listed';
+  await saveItem(item);
+  updateNav();
+  viewReadyKeepScroll(item.id, 'ebay');
+  toast(r.updated ? 'eBay listing updated.' : 'Posted to eBay — it\'s live! Reminders are on.', 5000);
 }
 
 function viewReadyKeepScroll(id, platform) {
@@ -1752,6 +1882,120 @@ function wireIconEditor(v) {
   $('#icon-reset', v).onclick = () => update({ ...DEFAULT_ICON }, true);
 }
 
+// ---------- eBay posting settings ----------
+let ebayLists = null; // policies and locations loaded from eBay this session
+
+function ebaySettingsHTML() {
+  const st = S.settings;
+  const eb = st.ebay || {};
+  const sel = (key, label, list, idKey = 'id') => `<label>${label}<select data-eb-policy="${key}">
+      <option value="">— choose —</option>
+      ${(list || []).map((x) => `<option value="${h(x[idKey])}" ${String(x[idKey]) === String(eb[key] || '') ? 'selected' : ''}>${h(x.name)}</option>`).join('')}
+      ${!list && eb[key] ? `<option value="${h(eb[key])}" selected>${h(eb.names?.[key] || eb[key])}</option>` : ''}
+    </select></label>`;
+  if (!st.sheetUrl) return '<p class="small muted">Connect your Google Sheet first (Google Sheets sync, above). The eBay keys and sign-in live in that Google script, not on this phone.</p>';
+  return `
+    <p class="small muted">Post listings straight from <b>Ready for eBay</b>. Your eBay keys stay in your Google script; this phone never sees them.</p>
+    <div class="note small" id="eb-status">${eb.connected ? '✅ eBay connected.' : 'Not connected yet. Tap <b>Check connection</b> after each setup step.'}</div>
+    <details class="small" ${eb.connected ? '' : 'open'}><summary><b>One-time setup</b></summary>
+      <ol class="steps">
+        <li>Update your Google script: <button class="btn small" id="eb-copy-script">📋 Copy script</button> → in Apps Script select all, paste, 💾 Save. Then <b>Deploy → Manage deployments → ✏️ → Version: New version → Deploy</b>.</li>
+        <li>In the editor's function drop-down (next to ▶ Run) pick <b>authorizeEbay</b>, tap <b>▶ Run</b> and allow access (Advanced → Go to … (unsafe) → Allow).</li>
+        <li>⚙️ <b>Project Settings → Script properties → Add script property</b>, three times:<br><code>EBAY_APP_ID</code> = App ID (Client ID)<br><code>EBAY_CERT_ID</code> = Cert ID (Client Secret)<br><code>EBAY_RUNAME</code> = your RuName<br>Use the <b>Production</b> keys, then <b>Save script properties</b>.</li>
+        <li>On developer.ebay.com, set your RuName's <b>Auth accepted URL</b> to your Web app URL: <button class="btn small" id="eb-copy-url">📋 Copy Web app URL</button></li>
+        <li>Tap <b>Connect eBay</b> below, sign in and agree. When you see "eBay connected ✓", come back here and tap <b>Check connection</b>.</li>
+      </ol>
+    </details>
+    <div class="btn-row">
+      <button class="btn" id="eb-check">🔌 Check connection</button>
+      <button class="btn primary" id="eb-connect">${eb.connected ? 'Reconnect eBay' : 'Connect eBay'}</button>
+      ${eb.connected ? '<button class="btn" id="eb-disconnect">Disconnect</button>' : ''}
+    </div>
+    <h3>Listing settings</h3>
+    <label>ZIP code you ship from<input id="eb-zip" inputmode="numeric" maxlength="10" value="${h(eb.zip || '')}" placeholder="e.g. 78701"></label>
+    <p class="small muted">eBay's business policies hold your shipping, payment and return terms. Set them up on eBay under <b>Account → Business policies</b>, then load them here.</p>
+    <div class="btn-row"><button class="btn" id="eb-load" ${eb.connected ? '' : 'disabled'}>⤵️ Load my eBay policies</button></div>
+    ${sel('fulfillment', 'Shipping policy', ebayLists?.fulfillment)}
+    ${sel('payment', 'Payment policy', ebayLists?.payment)}
+    ${sel('returns', 'Return policy', ebayLists?.returns)}
+    ${ebayLists?.locations?.length ? sel('location', 'Ships from (eBay location)', ebayLists.locations, 'key') : ''}`;
+}
+
+function wireEbaySettings(v) {
+  const st = S.settings;
+  const eb = (st.ebay = st.ebay || {});
+  const rerender = () => {
+    $('#ebay-body', v).innerHTML = ebaySettingsHTML();
+    wireEbaySettings(v);
+  };
+  const on = (id, fn) => {
+    const el = $(id, v);
+    if (el) el.onclick = fn;
+  };
+  on('#eb-copy-script', () => copy(scriptSource(st.sheetSecret)));
+  on('#eb-copy-url', () => copy(st.sheetUrl));
+  on('#eb-check', async () => {
+    const r = await busy('Checking eBay connection…', () => ebayStatus(st.sheetUrl, st.sheetSecret));
+    if (!r) return;
+    eb.connected = !!r.connected;
+    await saveSettings();
+    rerender();
+    const el = $('#eb-status', v);
+    if (!r.configured) el.innerHTML = `Script updated ✓. Now add these in Script properties: <b>${r.missing.map(h).join(', ')}</b>.`;
+    else if (!r.connected) el.innerHTML = 'Keys found ✓. Now tap <b>Connect eBay</b> and sign in.';
+    else el.innerHTML = `✅ eBay connected${r.connectedAt ? ` (since ${h(r.connectedAt.slice(0, 10))})` : ''}. Load your policies below if you haven't.`;
+  });
+  on('#eb-connect', async () => {
+    // Open the window now (before waiting) so the browser doesn't block it.
+    const w = window.open('', '_blank');
+    const url = await busy('Getting the eBay sign-in page…', () => ebayAuthUrl(st.sheetUrl, st.sheetSecret));
+    if (!url) {
+      if (w) w.close();
+      return;
+    }
+    if (w) w.location = url;
+    else location.href = url;
+    toast('Sign in to eBay, then come back and tap Check connection.', 6000);
+  });
+  on('#eb-disconnect', async () => {
+    if (!confirm('Disconnect eBay? Listings already posted stay on eBay.')) return;
+    if (!(await busy('Disconnecting…', () => ebayDisconnect(st.sheetUrl, st.sheetSecret)))) return;
+    eb.connected = false;
+    await saveSettings();
+    rerender();
+  });
+  on('#eb-load', async () => {
+    const r = await busy('Loading your eBay policies…', () => ebayPolicies(st.sheetUrl, st.sheetSecret));
+    if (!r) return;
+    ebayLists = r;
+    eb.names = eb.names || {};
+    // Pick the only option automatically.
+    for (const [key, list, idKey] of [['fulfillment', r.fulfillment, 'id'], ['payment', r.payment, 'id'], ['returns', r.returns, 'id'], ['location', r.locations, 'key']]) {
+      if (!list.some((x) => String(x[idKey]) === String(eb[key]))) eb[key] = list.length === 1 ? list[0][idKey] : '';
+      const pick = list.find((x) => String(x[idKey]) === String(eb[key]));
+      eb.names[key] = pick ? pick.name : '';
+    }
+    await saveSettings();
+    rerender();
+    if (!r.fulfillment.length || !r.payment.length || !r.returns.length) toast('Some policies are missing — create them on eBay under Account → Business policies, then load again.', 6000);
+    else toast('Policies loaded.');
+  });
+  const zip = $('#eb-zip', v);
+  if (zip)
+    zip.oninput = () => {
+      eb.zip = zip.value.trim();
+      saveSettings();
+    };
+  for (const s of $$('[data-eb-policy]', v)) {
+    s.onchange = () => {
+      const key = s.dataset.ebPolicy;
+      eb[key] = s.value;
+      eb.names = { ...(eb.names || {}), [key]: s.selectedOptions[0]?.textContent || '' };
+      saveSettings();
+    };
+  }
+}
+
 // ---------- Settings ----------
 function viewSettings() {
   const st = S.settings;
@@ -1834,6 +2078,8 @@ function viewSettings() {
         <p class="muted">To reset the code, tap <button class="btn small" id="new-secret">New sync code</button>, then copy the script again and deploy a new version (Deploy → Manage deployments → ✏️ → Version: New).</p></details>
     </div></details>
 
+    <details class="card section"><summary>🛒 eBay posting</summary><div class="section-body" id="ebay-body">${ebaySettingsHTML()}</div></details>
+
     <details class="card section"><summary>💾 Your data</summary><div class="section-body">
       <p class="small muted">Everything (items, photos, listings) is saved on this phone only. Back up regularly, especially before clearing browser data or switching phones.</p>
       <div class="btn-col">
@@ -1857,6 +2103,7 @@ function viewSettings() {
     </div></details>`;
   const v = setView('Settings', html);
   wireIconEditor(v);
+  wireEbaySettings(v);
 
   for (const k of ['apiKey', 'location', 'pickupNote', 'priceNote', 'shippingNote']) {
     $(`#s-${k}`).oninput = (e) => {

@@ -6,7 +6,7 @@
 // secret (the "sync code") guards every request.
 
 // Bump when the script gains features the app relies on.
-export const SCRIPT_VERSION = 3;
+export const SCRIPT_VERSION = 4;
 
 import { TIERS, CATEGORIES, CONDITIONS, itemTier, suggestPrice } from './pricing.js';
 import { platformName } from './platforms.js';
@@ -196,9 +196,26 @@ async function callScript(url, secret, payload) {
     if (data.error === 'bad secret') throw new SyncError('The sync code in your Google script doesn\'t match this app. Copy the script again and deploy a new version — or, on a new phone, enter the sync code from your old one.');
     if (payload.action && /reading 'header'|unknown action/.test(String(data.error))) throw new SyncError(OLD_SCRIPT);
     if (/permission to call DriveApp|auth\/drive/.test(String(data.error))) throw new SyncError(DRIVE_PERMISSION);
+    const ebay = ebayError(String(data.error));
+    if (ebay) throw new SyncError(ebay);
     throw new SyncError(`Google error: ${data.error}`);
   }
   return data;
+}
+
+const EBAY_PERMISSION = 'Google hasn\'t given the script permission to contact eBay yet. In Apps Script, pick "authorizeEbay" in the drop-down next to ▶ Run, click ▶ Run, then Review permissions → your account → Advanced → Go to … (unsafe) → Allow.';
+
+// Friendly text for the eBay errors the script reports (null if it isn't one).
+export function ebayError(msg) {
+  if (/permission to call UrlFetchApp|script\.external_request|PropertiesService/.test(msg)) return EBAY_PERMISSION;
+  let m = msg.match(/EBAY_KEYS_MISSING (.*)/);
+  if (m) return `Your eBay keys aren't in the Google script yet (missing: ${m[1]}). In Apps Script: ⚙️ Project Settings → Script properties → Add script property.`;
+  if (/EBAY_NOT_CONNECTED/.test(msg)) return 'eBay isn\'t connected. Go to Settings → eBay posting and tap Connect eBay.';
+  m = msg.match(/EBAY_AUTH (.*)/);
+  if (m) return `eBay didn't accept the keys or sign-in: ${m[1]}. Check EBAY_APP_ID, EBAY_CERT_ID and EBAY_RUNAME in Script properties (Production keys, no extra spaces).`;
+  m = msg.match(/EBAY (.*)/);
+  if (m) return `eBay: ${m[1]}`;
+  return null;
 }
 
 export function pushToSheet(url, secret, items) {
@@ -257,9 +274,30 @@ export async function fetchDrivePhoto(url, secret, id) {
   return (await callScript(url, secret, { action: 'photo-get', id })).data || null;
 }
 
+// ---------- eBay (through the script) ----------
+export const ebayStatus = (url, secret) => callScript(url, secret, { action: 'ebay-status' });
+export const ebayAuthUrl = async (url, secret) => (await callScript(url, secret, { action: 'ebay-auth-url' })).url;
+export const ebayDisconnect = (url, secret) => callScript(url, secret, { action: 'ebay-disconnect' });
+export const ebayPolicies = (url, secret) => callScript(url, secret, { action: 'ebay-policies' });
+export const ebayCategories = (url, secret, q, categoryId) => callScript(url, secret, { action: 'ebay-categories', q, categoryId });
+
+// Makes sure the photos are in Drive (where the script picks them up), then posts.
+export async function postToEbay({ url, secret, listing, photoIds, getPhoto, locationKey, postalCode, onProgress = () => {} }) {
+  onProgress('Checking photos…');
+  const have = new Set((await callScript(url, secret, { action: 'photos-have' })).ids || []);
+  const missing = photoIds.filter((id) => !have.has(id));
+  for (const [i, id] of missing.entries()) {
+    onProgress(`Uploading photos to Google Drive ${i + 1} of ${missing.length}…`);
+    const data = await getPhoto(id);
+    if (data) await callScript(url, secret, { action: 'photo-put', id, data });
+  }
+  onProgress('Posting to eBay… (this can take a minute)');
+  return callScript(url, secret, { action: 'ebay-post', sku: listing.sku, inventoryItem: listing.inventoryItem, offer: listing.offer, photoIds, locationKey, postalCode });
+}
+
 // The Apps Script the user pastes into their spreadsheet (Extensions → Apps Script).
 export function scriptSource(secret) {
-  return `// Resell Assistant → Google Sheets sync + Drive backups (script version ${SCRIPT_VERSION})
+  return `// Re-Sell Assistant → Google Sheets sync, Drive backups and eBay posting (script version ${SCRIPT_VERSION})
 // Paste this into Extensions → Apps Script, then Deploy → New deployment → Web app
 // (Execute as: Me, Who has access: Anyone). Keep the code below private.
 const SYNC_CODE = '${secret}';
@@ -292,6 +330,12 @@ function doPost(e) {
     if (action === 'backup') return reply(Object.assign({ ok: true }, saveBackup(body.backup)));
     if (action === 'list-backups') return reply({ ok: true, backups: listBackups() });
     if (action === 'get-backup') return reply({ ok: true, backup: getBackup(body.id) });
+    if (action === 'ebay-status') return reply(Object.assign({ ok: true }, ebayStatus()));
+    if (action === 'ebay-auth-url') return reply({ ok: true, url: ebayAuthUrl() });
+    if (action === 'ebay-disconnect') { ebayDisconnect(); return reply({ ok: true }); }
+    if (action === 'ebay-policies') return reply(Object.assign({ ok: true }, ebayPolicies()));
+    if (action === 'ebay-categories') return reply(Object.assign({ ok: true }, ebayCategories(body.q, body.categoryId)));
+    if (action === 'ebay-post') return reply(Object.assign({ ok: true }, ebayPost(body)));
     return reply({ ok: false, error: 'unknown action' });
   } catch (err) {
     return reply({ ok: false, error: String(err) });
@@ -300,7 +344,9 @@ function doPost(e) {
   }
 }
 
-function doGet() {
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  if (p.code || p.error) return ebayCallback(p);
   return reply(Object.assign({ ok: true, app: 'resell-assistant', version: ${SCRIPT_VERSION}, message: 'Resell Assistant sync is set up. Copy this page\\'s URL into the app.' }, sheetInfo()));
 }
 
@@ -420,6 +466,247 @@ function getBackup(id) {
   const f = id ? files.filter(function (x) { return x.getId() === id; })[0] : files[0];
   if (!f) throw new Error('backup not found');
   return JSON.parse(f.getBlob().getDataAsString());
+}
+
+// ---- eBay posting ----
+// Your eBay keys go in ⚙️ Project Settings → Script properties (not in this code):
+// EBAY_APP_ID, EBAY_CERT_ID and EBAY_RUNAME. Sign-in tokens are kept there too.
+const EBAY_API = 'https://api.ebay.com';
+const EBAY_MARKET = 'EBAY_US';
+const EBAY_SCOPES = ['https://api.ebay.com/oauth/api_scope', 'https://api.ebay.com/oauth/api_scope/sell.inventory', 'https://api.ebay.com/oauth/api_scope/sell.account'].join(' ');
+
+// Run this once from the editor (▶ Run) so Google allows the script to contact eBay.
+function authorizeEbay() {
+  UrlFetchApp.fetch(EBAY_API, { muteHttpExceptions: true });
+  props().getProperty('EBAY_APP_ID');
+  Logger.log('eBay access granted. Keys found: ' + JSON.stringify(ebayStatus()));
+}
+
+function props() { return PropertiesService.getScriptProperties(); }
+function enc(s) { return encodeURIComponent(s); }
+function safeJson(t) { try { return JSON.parse(t); } catch (err) { return null; } }
+
+function ebayKeys() {
+  const p = props();
+  const get = function (k) { return String(p.getProperty(k) || '').trim(); };
+  const k = { appId: get('EBAY_APP_ID'), certId: get('EBAY_CERT_ID'), ruName: get('EBAY_RUNAME') };
+  k.missing = ['EBAY_APP_ID', 'EBAY_CERT_ID', 'EBAY_RUNAME'].filter(function (n) { return !get(n); });
+  return k;
+}
+
+function requireKeys() {
+  const k = ebayKeys();
+  if (k.missing.length) throw new Error('EBAY_KEYS_MISSING ' + k.missing.join(', '));
+  return k;
+}
+
+function ebayStatus() {
+  const k = ebayKeys();
+  const p = props();
+  return { configured: !k.missing.length, missing: k.missing, connected: !!p.getProperty('EBAY_REFRESH_TOKEN'), connectedAt: p.getProperty('EBAY_CONNECTED_AT') || '' };
+}
+
+function ebayAuthUrl() {
+  const k = requireKeys();
+  const state = Utilities.getUuid();
+  props().setProperty('EBAY_STATE', state);
+  return 'https://auth.ebay.com/oauth2/authorize?client_id=' + enc(k.appId) + '&redirect_uri=' + enc(k.ruName) +
+    '&response_type=code&scope=' + enc(EBAY_SCOPES) + '&state=' + enc(state);
+}
+
+function ebayToken(form) {
+  const k = requireKeys();
+  const res = UrlFetchApp.fetch(EBAY_API + '/identity/v1/oauth2/token', {
+    method: 'post',
+    contentType: 'application/x-www-form-urlencoded',
+    headers: { Authorization: 'Basic ' + Utilities.base64Encode(k.appId + ':' + k.certId) },
+    payload: form,
+    muteHttpExceptions: true,
+  });
+  const data = safeJson(res.getContentText()) || {};
+  if (res.getResponseCode() !== 200) {
+    const e = new Error('EBAY_AUTH ' + (data.error_description || data.error || ('HTTP ' + res.getResponseCode())));
+    e.grant = data.error;
+    throw e;
+  }
+  return data;
+}
+
+function saveAccess(t) {
+  const p = props();
+  p.setProperty('EBAY_ACCESS_TOKEN', t.access_token);
+  p.setProperty('EBAY_ACCESS_EXPIRES', String(Date.now() + (Number(t.expires_in) - 120) * 1000));
+}
+
+// eBay sends the browser back here (the RuName's accepted URL) after sign-in.
+function ebayCallback(p) {
+  try {
+    if (p.error) return page('eBay not connected', 'Sign-in was cancelled. Go back to Re-Sell Assistant and tap Connect eBay to try again.');
+    const props_ = props();
+    if (!p.state || p.state !== props_.getProperty('EBAY_STATE')) return page('Sign-in link expired', 'Go back to Re-Sell Assistant and tap Connect eBay again.');
+    props_.deleteProperty('EBAY_STATE');
+    const t = ebayToken('grant_type=authorization_code&code=' + enc(p.code) + '&redirect_uri=' + enc(requireKeys().ruName));
+    props_.setProperty('EBAY_REFRESH_TOKEN', t.refresh_token);
+    props_.setProperty('EBAY_CONNECTED_AT', new Date().toISOString());
+    saveAccess(t);
+    return page('eBay connected ✓', 'You can close this page and go back to Re-Sell Assistant.');
+  } catch (err) {
+    return page('eBay not connected', String(err.message || err).replace(/^EBAY_\\w+ /, ''));
+  }
+}
+
+function page(title, text) {
+  const esc = function (s) { return String(s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); };
+  return HtmlService.createHtmlOutput('<div style="font-family:-apple-system,Roboto,Arial,sans-serif;padding:24px;max-width:480px;margin:auto">' +
+    '<h2 style="color:#0f766e">' + esc(title) + '</h2><p style="font-size:17px">' + esc(text) + '</p></div>')
+    .setTitle(title).addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+function ebayDisconnect() {
+  ['EBAY_REFRESH_TOKEN', 'EBAY_ACCESS_TOKEN', 'EBAY_ACCESS_EXPIRES', 'EBAY_CONNECTED_AT', 'EBAY_STATE'].forEach(function (k) { props().deleteProperty(k); });
+}
+
+// A user token for the seller's account, refreshed when it expires (every 2 hours).
+function ebayAccess() {
+  const p = props();
+  if (p.getProperty('EBAY_ACCESS_TOKEN') && Date.now() < Number(p.getProperty('EBAY_ACCESS_EXPIRES') || 0)) return p.getProperty('EBAY_ACCESS_TOKEN');
+  const refresh = p.getProperty('EBAY_REFRESH_TOKEN');
+  if (!refresh) throw new Error('EBAY_NOT_CONNECTED');
+  try {
+    const t = ebayToken('grant_type=refresh_token&refresh_token=' + enc(refresh) + '&scope=' + enc(EBAY_SCOPES));
+    saveAccess(t);
+    return t.access_token;
+  } catch (err) {
+    if (err.grant === 'invalid_grant') { ebayDisconnect(); throw new Error('EBAY_NOT_CONNECTED'); }
+    throw err;
+  }
+}
+
+function ebayErrorText(data, code) {
+  const errs = (data && data.errors) || [];
+  if (!errs.length) return 'eBay returned an error (HTTP ' + code + ').';
+  return errs.map(function (x) {
+    const params = (x.parameters || []).map(function (q) { return q.value; }).filter(String).join(', ');
+    return (x.longMessage || x.message || 'Error ' + x.errorId) + (params && (x.longMessage || x.message || '').indexOf(params) < 0 ? ' (' + params + ')' : '');
+  }).join(' ');
+}
+
+// One eBay REST call. allow404: return null instead of failing when nothing is found.
+function ebayApi(method, path, body, allow404) {
+  const opts = {
+    method: method,
+    headers: { Authorization: 'Bearer ' + ebayAccess(), 'Content-Language': 'en-US', 'Accept-Language': 'en-US', 'X-EBAY-C-MARKETPLACE-ID': EBAY_MARKET },
+    muteHttpExceptions: true,
+  };
+  if (body !== undefined) { opts.contentType = 'application/json'; opts.payload = JSON.stringify(body); }
+  const res = UrlFetchApp.fetch(EBAY_API + path, opts);
+  const code = res.getResponseCode();
+  const data = safeJson(res.getContentText()) || {};
+  if (code === 404 && allow404) return null;
+  if (code >= 400) throw new Error('EBAY ' + ebayErrorText(data, code));
+  return data;
+}
+
+function ebayPolicies() {
+  const m = '?marketplace_id=' + EBAY_MARKET;
+  const list = function (arr, idKey) { return (arr || []).map(function (x) { return { id: x[idKey], name: x.name }; }); };
+  const locs = (ebayApi('get', '/sell/inventory/v1/location?limit=100', undefined, true) || {}).locations || [];
+  return {
+    fulfillment: list(ebayApi('get', '/sell/account/v1/fulfillment_policy' + m).fulfillmentPolicies, 'fulfillmentPolicyId'),
+    payment: list(ebayApi('get', '/sell/account/v1/payment_policy' + m).paymentPolicies, 'paymentPolicyId'),
+    returns: list(ebayApi('get', '/sell/account/v1/return_policy' + m).returnPolicies, 'returnPolicyId'),
+    locations: locs.map(function (l) {
+      const a = (l.location && l.location.address) || {};
+      return { key: l.merchantLocationKey, name: l.name || l.merchantLocationKey, postalCode: a.postalCode || '' };
+    }),
+  };
+}
+
+// Category suggestions for a title, and the item specifics eBay requires for a category.
+function ebayCategories(q, categoryId) {
+  const out = {};
+  const tree = '/commerce/taxonomy/v1/category_tree/0';
+  if (q) {
+    const r = ebayApi('get', tree + '/get_category_suggestions?q=' + enc(String(q).slice(0, 100)), undefined, true) || {};
+    out.suggestions = (r.categorySuggestions || []).slice(0, 8).map(function (s) {
+      const path = (s.categoryTreeNodeAncestors || []).map(function (a) { return a.categoryName; }).reverse();
+      path.push(s.category.categoryName);
+      return { id: s.category.categoryId, name: s.category.categoryName, path: path.join(' › ') };
+    });
+  }
+  if (categoryId) {
+    const r = ebayApi('get', tree + '/get_item_aspects_for_category?category_id=' + enc(categoryId), undefined, true) || {};
+    out.aspects = (r.aspects || []).filter(function (a) { return a.aspectConstraint && a.aspectConstraint.aspectRequired; }).map(function (a) {
+      return { name: a.localizedAspectName, mode: a.aspectConstraint.aspectMode, values: (a.aspectValues || []).slice(0, 40).map(function (v) { return v.localizedValue; }) };
+    });
+  }
+  return out;
+}
+
+// Uploads a backed-up photo to eBay's picture hosting once and remembers its URL.
+function ebayImageUrl(id) {
+  if (!/^[\\w-]+$/.test(id)) throw new Error('bad photo id');
+  const p = props();
+  const cached = safeJson(p.getProperty('EBAY_IMG_' + id) || '');
+  if (cached && Date.now() < cached.exp) return cached.url;
+  const it = photoFolder().getFilesByName(id + '.jpg');
+  if (!it.hasNext()) throw new Error('EBAY A photo is missing from Google Drive. Try posting again.');
+  const res = UrlFetchApp.fetch('https://apim.ebay.com/commerce/media/v1_beta/image/create_image_from_file', {
+    method: 'post',
+    headers: { Authorization: 'Bearer ' + ebayAccess() },
+    payload: { image: it.next().getBlob() },
+    muteHttpExceptions: true,
+  });
+  const code = res.getResponseCode();
+  let data = safeJson(res.getContentText()) || {};
+  if (code >= 400) throw new Error('EBAY Photo upload failed: ' + ebayErrorText(data, code));
+  if (!data.imageUrl) {
+    const h = res.getAllHeaders();
+    const loc = h.Location || h.location;
+    if (loc) data = safeJson(UrlFetchApp.fetch(loc, { headers: { Authorization: 'Bearer ' + ebayAccess() }, muteHttpExceptions: true }).getContentText()) || {};
+  }
+  if (!data.imageUrl) throw new Error('EBAY Photo upload failed: eBay did not return a picture link.');
+  p.setProperty('EBAY_IMG_' + id, JSON.stringify({ url: data.imageUrl, exp: Date.now() + 25 * 86400000 }));
+  return data.imageUrl;
+}
+
+// Where items ship from: the chosen location, any existing one, or a new one from the ZIP code.
+function ebayLocation(key, zip) {
+  const locs = (ebayApi('get', '/sell/inventory/v1/location?limit=100', undefined, true) || {}).locations || [];
+  const keys = locs.map(function (l) { return l.merchantLocationKey; });
+  if (key && keys.indexOf(key) >= 0) return key;
+  if (keys.length) return keys[0];
+  zip = String(zip || '').trim();
+  if (!/^\\d{5}(-\\d{4})?$/.test(zip)) throw new Error('EBAY Enter your ZIP code in Settings → eBay posting so eBay knows where the item ships from.');
+  ebayApi('post', '/sell/inventory/v1/location/resell-home', { location: { address: { postalCode: zip, country: 'US' } }, locationTypes: ['WAREHOUSE'], name: 'Home', merchantLocationStatus: 'ENABLED' });
+  return 'resell-home';
+}
+
+function ebayPost(b) {
+  const sku = String(b.sku || '');
+  if (!/^[\\w-]{1,50}$/.test(sku)) throw new Error('bad sku');
+  const imageUrls = (b.photoIds || []).slice(0, 24).map(ebayImageUrl);
+  if (!imageUrls.length) throw new Error('EBAY Add at least one photo.');
+  const inv = b.inventoryItem;
+  inv.product.imageUrls = imageUrls;
+  ebayApi('put', '/sell/inventory/v1/inventory_item/' + enc(sku), inv);
+  const offer = b.offer;
+  offer.sku = sku;
+  offer.marketplaceId = EBAY_MARKET;
+  offer.merchantLocationKey = ebayLocation(b.locationKey, b.postalCode);
+  const found = ebayApi('get', '/sell/inventory/v1/offer?sku=' + enc(sku) + '&marketplace_id=' + EBAY_MARKET, undefined, true);
+  const existing = found && (found.offers || [])[0];
+  let offerId, listingId;
+  if (existing) {
+    offerId = existing.offerId;
+    ebayApi('put', '/sell/inventory/v1/offer/' + enc(offerId), offer);
+    if (existing.status === 'PUBLISHED' && existing.listing && existing.listing.listingId) listingId = existing.listing.listingId;
+  } else {
+    offerId = ebayApi('post', '/sell/inventory/v1/offer', offer).offerId;
+  }
+  const updated = !!listingId;
+  if (!listingId) listingId = ebayApi('post', '/sell/inventory/v1/offer/' + enc(offerId) + '/publish', {}).listingId;
+  return { offerId: offerId, listingId: listingId, url: 'https://www.ebay.com/itm/' + listingId, updated: updated, photos: imageUrls.length };
 }
 
 function reply(obj) {

@@ -88,7 +88,32 @@ class FakeSheet {
   }
 }
 
-export function createFakeGoogle({ sheetName = 'Resell listings' } = {}) {
+// Script properties.
+function fakeProperties() {
+  const store = {};
+  return {
+    store,
+    getProperty: (k) => (k in store ? store[k] : null),
+    setProperty: (k, v) => { store[k] = String(v); },
+    deleteProperty: (k) => { delete store[k]; },
+  };
+}
+
+// UrlFetchApp backed by a handler(url, options) → { code, body, headers }.
+function fakeUrlFetch(handler) {
+  const calls = [];
+  return {
+    calls,
+    fetch(url, opts = {}) {
+      calls.push({ url, opts });
+      const r = handler ? handler(url, opts) : { code: 404, body: '' };
+      const body = typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? {});
+      return { getResponseCode: () => r.code ?? 200, getContentText: () => body, getAllHeaders: () => r.headers || {} };
+    },
+  };
+}
+
+export function createFakeGoogle({ sheetName = 'Resell listings', fetch: handler } = {}) {
   const root = new FakeFolder('My Drive');
   const parent = root.createFolder('FOR SALE APP');
   const sheets = [new FakeSheet('Sheet1')];
@@ -110,14 +135,28 @@ export function createFakeGoogle({ sheetName = 'Resell listings' } = {}) {
     },
     Utilities: {
       base64Decode: (s) => Buffer.from(s, 'base64'),
-      base64Encode: (b) => Buffer.from(b).toString('base64'),
+      base64Encode: (b) => Buffer.from(typeof b === 'string' ? Buffer.from(b, 'utf8') : b).toString('base64'),
       newBlob: (bytes, mime, name) => ({ bytes, mime, name }),
+      getUuid: () => 'uuid-' + nextId++,
       formatDate: (d) => d.toISOString().replace(/[-:T]/g, '').slice(0, 14),
     },
     Session: { getScriptTimeZone: () => 'America/Chicago' },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: (t) => ({ setMimeType: () => t }) },
+    PropertiesService: null,
+    UrlFetchApp: null,
+    HtmlService: {
+      createHtmlOutput: (html) => {
+        const out = { html, setTitle: (t) => { out.title = t; return out; }, addMetaTag: () => out };
+        return out;
+      },
+    },
+    Logger: { log() {} },
   };
-  return { env, ss, sheets, root, parent };
+  const props = fakeProperties();
+  const urlFetch = fakeUrlFetch(handler);
+  env.PropertiesService = { getScriptProperties: () => props };
+  env.UrlFetchApp = urlFetch;
+  return { env, ss, sheets, root, parent, props, urlFetch };
 }
 
 // Load the script source against the fake services; returns { doPost(body) → object, doGet() → object }.
@@ -126,6 +165,9 @@ export function loadScript(source, fake) {
   const s = fn(...Object.values(fake.env));
   return {
     doPost: (body) => JSON.parse(s.doPost({ postData: { contents: typeof body === 'string' ? body : JSON.stringify(body) } })),
-    doGet: () => JSON.parse(s.doGet()),
+    doGet: (parameter) => {
+      const r = s.doGet(parameter ? { parameter } : undefined);
+      return typeof r === 'string' ? JSON.parse(r) : r; // JSON reply, or an HtmlService page
+    },
   };
 }

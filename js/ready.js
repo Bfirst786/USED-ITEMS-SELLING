@@ -70,6 +70,15 @@ function photoNote(n) {
   return { value: `${n} photos` };
 }
 
+// Offers: auto-accept close to asking, auto-decline below your floor.
+export function bestOfferPrices(price, floor) {
+  price = Number(price) || 0;
+  if (!price) return { accept: 0, decline: 0 };
+  const accept = nicePrice(price * 0.93);
+  const decline = Math.min(Number(floor) || nicePrice(price * 0.8), accept - 1);
+  return { accept, decline: Math.max(decline, 0) };
+}
+
 function ebaySheet(item, settings = {}) {
   const ai = item.ready?.ebay?.ai;
   const lim = limitsFor('ebay');
@@ -83,9 +92,7 @@ function ebaySheet(item, settings = {}) {
   const specs = itemSpecifics(item, ai);
   const category = ai?.category || EBAY_CATEGORIES[item.category] || '';
 
-  // Offers: auto-accept close to asking, auto-decline below your floor.
-  const accept = price ? nicePrice(price * 0.93) : 0;
-  const decline = price ? Math.min(floor || nicePrice(price * 0.8), accept - 1) : 0;
+  const { accept, decline } = bestOfferPrices(price, floor);
 
   const fields = [
     { key: 'photos', step: 'Photos', label: 'Photos', value: photos.value, copy: false, warn: photos.warn, action: 'save-photos', hint: 'Tap "Save photos" to put them in your camera roll, then add them in eBay. First photo = cover.' },
